@@ -1,17 +1,20 @@
 """Config loader.
 
-The operator authors a single TOML file (see ``config/dealdesk.toml``). Phase 1
-consumes the inbox address, the activation cutoff, the Bucket labels that mark an
-Email as already processed, and the auth wiring. The Buy Box field catalog is a
-later-phase concern and is not modelled here.
+The operator authors a single TOML file (see ``config/dealdesk.toml``). It
+consumes the inbox address, the activation cutoff, the Bucket labels, the auth
+wiring, the Triage Log sheet, the AI-fallback settings, and the **Buy Box field
+catalog** (each field's filter/calc role and gate threshold). The catalog is
+authored by the operator, never hard-coded.
 """
 
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+
+from .buybox import BuyBox
 
 # Repo-root-relative default, resolved from this file's location so the entry
 # command works regardless of the caller's working directory.
@@ -26,6 +29,11 @@ class Config:
     bucket_labels: tuple[str, ...]
     credential_env: str
     delegated_subject: str
+    buybox: BuyBox = field(default_factory=BuyBox)
+    triage_spreadsheet_id: str = ""
+    triage_tab: str = "DEALS_TRIAGE"
+    ai_model: str = "claude-opus-4-8"
+    ai_api_key_env: str = "ANTHROPIC_API_KEY"
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
@@ -40,6 +48,8 @@ class Config:
         activation = raw.get("activation", {})
         buckets = raw.get("buckets", {})
         auth = raw.get("auth", {})
+        triage = raw.get("triage", {})
+        ai = raw.get("ai", {})
 
         cutoff_raw = activation.get("cutoff")
         # tomllib parses a bare TOML date into a datetime.date already; accept a
@@ -60,4 +70,9 @@ class Config:
             bucket_labels=tuple(buckets.get("labels", [])),
             credential_env=auth.get("credential_env", "GOOGLE_SERVICE_ACCOUNT_KEY"),
             delegated_subject=auth.get("delegated_subject", inbox["address"]),
+            buybox=BuyBox.from_dict(raw.get("buybox")),
+            triage_spreadsheet_id=triage.get("spreadsheet_id", ""),
+            triage_tab=triage.get("tab", "DEALS_TRIAGE"),
+            ai_model=ai.get("model", "claude-opus-4-8"),
+            ai_api_key_env=ai.get("api_key_env", "ANTHROPIC_API_KEY"),
         )

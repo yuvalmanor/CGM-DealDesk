@@ -58,13 +58,13 @@ The end-to-end triage spine with **no Source Templates** — the Extraction Ladd
 
 ### Acceptance criteria
 
-- [ ] Each Property is evaluated independently; a multi-property Email's Bucket is the best Verdict (`Passed-BuyBox > Needs-Human > Rejected`); no Property → `Not-A-Deal`.
-- [ ] Verdict matrix holds: present-&-fails-gate → Reject; missing filter field → Needs-Human; all gates pass → Pass; a confident Reject short-circuits missing data.
-- [ ] Must-have fields are derived from the active Buy Box config (one config, not two); rent-to-price yield is never a rejection reason.
-- [ ] Facts are extracted from both email bodies and attached PDFs; unknown Sources still parse via the AI fallback.
-- [ ] Every Property is written as one Triage Log row with facts, Verdict, reasons, and Calc-ready flag; the upsert is idempotent on message-id + index.
-- [ ] The Bucket label is applied **last**; an Email is "done" only once labeled; a crash after the Triage write but before the label re-runs without duplicating the row (crash-recovery integration test passes).
-- [ ] Golden/table tests cover the Evaluator and Bucket Rollup decision matrices.
+- [x] Each Property is evaluated independently; a multi-property Email's Bucket is the best Verdict (`Passed-BuyBox > Needs-Human > Rejected`); no Property → `Not-A-Deal`. _(Bucket Rollup + Orchestrator; `test_rollup`, `test_orchestrator` multi-property/Not-A-Deal, verified in the live spine drive.)_
+- [x] Verdict matrix holds: present-&-fails-gate → Reject; missing filter field → Needs-Human; all gates pass → Pass; a confident Reject short-circuits missing data. _(`evaluator.py`; golden `test_evaluator` covers every cell incl. short-circuit.)_
+- [x] Must-have fields are derived from the active Buy Box config (one config, not two); rent-to-price yield is never a rejection reason. _(`BuyBox.must_have_names`; `test_buybox`; `test_evaluator::test_low_yield_is_never_a_rejection_reason`.)_
+- [x] Facts are extracted from both email bodies and attached PDFs; unknown Sources still parse via the AI fallback. _(`ExtractionLadder` gathers body+PDF text; `test_extraction` covers PDF-only, body+PDF combine, and unknown-Source AI fallthrough.)_
+- [x] Every Property is written as one Triage Log row with facts, Verdict, reasons, and Calc-ready flag; the upsert is idempotent on message-id + index. _(`triage_log.py` + `SheetsGateway`; `test_triage_log`, `test_sheets_gateway` idempotent-upsert.)_
+- [x] The Bucket label is applied **last**; an Email is "done" only once labeled; a crash after the Triage write but before the label re-runs without duplicating the row (crash-recovery integration test passes). _(`Orchestrator` label-last; `test_orchestrator::test_crash_before_label_reruns_without_duplicating_row` passes.)_
+- [x] Golden/table tests cover the Evaluator and Bucket Rollup decision matrices. _(`test_evaluator.py`, `test_rollup.py`.)_
 
 ---
 

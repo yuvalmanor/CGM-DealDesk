@@ -1,11 +1,15 @@
 """DealDesk entry point.
 
-Phase 1 exposes one command:
+Commands:
 
     dealdesk discover        # read-only Source-by-volume tally over the window
+    dealdesk run             # triage the work queue: extract -> evaluate ->
+                             # rollup -> Triage Log -> Bucket label (label-last)
+    dealdesk run --dry-run   # extract + evaluate + print; no writes or labels
 
-It reads the Inbox work queue, tallies candidate Emails by Source, and prints a
-Pareto ranking. It makes no write, label, or AI call.
+``discover`` makes no write, label, or AI call. ``run`` writes the Triage Log and
+applies Bucket labels (unless ``--dry-run``); it may fall back to the Anthropic
+API for extraction.
 """
 
 from __future__ import annotations
@@ -14,12 +18,21 @@ import argparse
 import sys
 from datetime import date
 
-from .auth import build_gmail_service
+from .ai_fallback import AnthropicFallback
+from .auth import (
+    GMAIL_MODIFY_SCOPE,
+    GMAIL_READONLY_SCOPE,
+    build_gmail_service,
+    build_sheets_service,
+)
 from .config import Config
 from .cutoff import resolve_cutoff
 from .discovery import tally_sources
+from .extraction import ExtractionLadder
 from .gmail_gateway import GmailGateway
+from .orchestrator import Orchestrator
 from .query import build_work_queue_query
+from .sheets_gateway import SheetsGateway
 
 
 def _cmd_discover(args: argparse.Namespace) -> int:
@@ -51,6 +64,48 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    config = Config.load(args.config)
+    today = date.fromisoformat(args.today) if args.today else date.today()
+    cutoff = resolve_cutoff(config, today)
+
+    if not config.buybox.fields:
+        raise RuntimeError("No Buy Box fields configured; add [[buybox.fields]] to the config.")
+
+    scope = GMAIL_READONLY_SCOPE if args.dry_run else GMAIL_MODIFY_SCOPE
+    gmail = GmailGateway(build_gmail_service(config, [scope]))
+
+    import os
+
+    ai = AnthropicFallback(config.ai_model, os.environ.get(config.ai_api_key_env))
+    ladder = ExtractionLadder(config.buybox, ai)
+
+    sheets = None
+    if not args.dry_run:
+        if not config.triage_spreadsheet_id:
+            raise RuntimeError("triage.spreadsheet_id is not set; the Triage Log has nowhere to write.")
+        sheets = SheetsGateway(
+            build_sheets_service(config), config.triage_spreadsheet_id, config.triage_tab
+        )
+
+    mode = "DRY RUN — no writes or labels" if args.dry_run else "live — writes Triage Log, applies labels"
+    print(f"Inbox:  {config.inbox_address}")
+    print(f"Cutoff: {cutoff:%Y-%m-%d}  ({mode})")
+    print()
+
+    orchestrator = Orchestrator(gmail, sheets, ladder, config.buybox, dry_run=args.dry_run)
+    results = orchestrator.run(cutoff, config.bucket_labels)
+
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r.bucket.value] = counts.get(r.bucket.value, 0) + 1
+
+    print(f"Emails processed: {len(results)}")
+    for bucket, n in sorted(counts.items()):
+        print(f"  {bucket:<14} {n}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dealdesk", description=__doc__)
     parser.add_argument(
@@ -67,6 +122,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override 'today' (ISO date) for the rolling cutoff; useful for testing",
     )
     discover.set_defaults(func=_cmd_discover)
+
+    run = sub.add_parser(
+        "run", help="Triage the work queue: extract -> evaluate -> rollup -> Triage Log -> label"
+    )
+    run.add_argument(
+        "--today",
+        default=None,
+        help="Override 'today' (ISO date) for the rolling cutoff; useful for testing",
+    )
+    run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Extract, evaluate, and print without writing the Triage Log or applying labels",
+    )
+    run.set_defaults(func=_cmd_run)
     return parser
 
 

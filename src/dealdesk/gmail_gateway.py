@@ -1,21 +1,23 @@
-"""Gmail Gateway — read half (thin I/O adapter).
+"""Gmail Gateway — thin I/O adapter.
 
-Phase 1 exposes exactly one capability: fetch the header-only work queue. It
-lists message ids matching the work-queue query, then pulls just the From /
-Subject / Date headers for each. Strictly read-only — no label, no modify call
-is made here.
+Read half (Phase 1): fetch the header-only work queue. Full half (Phase 2):
+fetch an Email's body + attachments, and apply a Bucket label (the label-last
+write that marks an Email "done"). Label resolution creates the Bucket label if
+the operator hasn't made it yet.
 """
 
 from __future__ import annotations
 
+import base64
 from datetime import date
 
-from .models import MessageMeta
+from .models import Attachment, Email, MessageMeta
 from .query import build_work_queue_query
 
 # Impersonated-mailbox alias understood by the Gmail API.
 _USER_ID = "me"
 _METADATA_HEADERS = ["From", "Subject", "Date"]
+_TEXT_MIME = "text/plain"
 
 
 class GmailGateway:
@@ -23,6 +25,7 @@ class GmailGateway:
 
     def __init__(self, service):
         self._service = service
+        self._label_ids: dict[str, str] = {}  # name -> id, resolved lazily
 
     def fetch_work_queue(
         self, cutoff: date, bucket_labels: tuple[str, ...] | list[str]
@@ -54,6 +57,79 @@ class GmailGateway:
             ).execute()
             result.append(_to_meta(msg_id, detail))
         return result
+
+    def fetch_email(self, msg_id: str) -> Email:
+        """Fetch an Email in full: plain-text body plus every attachment's bytes
+        (attachment payloads are downloaded separately by Gmail's API)."""
+        messages = self._service.users().messages()
+        detail = messages.get(userId=_USER_ID, id=msg_id, format="full").execute()
+        headers = _header_map(detail.get("payload", {}))
+
+        body_parts: list[str] = []
+        attachments: list[Attachment] = []
+        self._walk_payload(msg_id, detail.get("payload", {}), body_parts, attachments)
+
+        return Email(
+            id=msg_id,
+            from_addr=headers.get("from", ""),
+            subject=headers.get("subject", ""),
+            date=headers.get("date", ""),
+            body_text="\n".join(body_parts),
+            attachments=tuple(attachments),
+        )
+
+    def apply_label(self, msg_id: str, label_name: str) -> None:
+        """Apply a Bucket label to an Email — the label-last write that marks it
+        processed. Creates the label if it doesn't exist yet."""
+        label_id = self._resolve_label_id(label_name)
+        self._service.users().messages().modify(
+            userId=_USER_ID, id=msg_id, body={"addLabelIds": [label_id]}
+        ).execute()
+
+    def _walk_payload(self, msg_id, payload, body_parts, attachments) -> None:
+        mime = payload.get("mimeType", "")
+        body = payload.get("body", {})
+        filename = payload.get("filename", "")
+
+        if filename and body.get("attachmentId"):
+            data = self._service.users().messages().attachments().get(
+                userId=_USER_ID, messageId=msg_id, id=body["attachmentId"]
+            ).execute()
+            raw = _b64url(data.get("data", ""))
+            attachments.append(Attachment(filename=filename, mime_type=mime, data=raw))
+        elif mime == _TEXT_MIME and body.get("data"):
+            body_parts.append(_b64url(body["data"]).decode("utf-8", errors="replace"))
+
+        for part in payload.get("parts", []) or []:
+            self._walk_payload(msg_id, part, body_parts, attachments)
+
+    def _resolve_label_id(self, label_name: str) -> str:
+        if label_name in self._label_ids:
+            return self._label_ids[label_name]
+        labels_api = self._service.users().labels()
+        listing = labels_api.list(userId=_USER_ID).execute()
+        for lbl in listing.get("labels", []):
+            self._label_ids[lbl["name"]] = lbl["id"]
+        if label_name not in self._label_ids:
+            created = labels_api.create(
+                userId=_USER_ID, body={"name": label_name}
+            ).execute()
+            self._label_ids[label_name] = created["id"]
+        return self._label_ids[label_name]
+
+
+def _header_map(payload: dict) -> dict:
+    return {
+        h.get("name", "").lower(): h.get("value", "")
+        for h in payload.get("headers", [])
+    }
+
+
+def _b64url(data: str) -> bytes:
+    # Gmail encodes body/attachment payloads as base64url (RFC 4648). Pad before
+    # decoding so a missing '=' tail doesn't raise.
+    padded = data + "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(padded)
 
 
 def _to_meta(msg_id: str, detail: dict) -> MessageMeta:

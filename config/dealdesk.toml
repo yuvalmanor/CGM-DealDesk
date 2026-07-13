@@ -1,8 +1,7 @@
 # DealDesk runtime configuration.
 #
-# Phase 1 reads only the [inbox], [activation], [buckets], and [auth] sections.
-# The Buy Box field catalog (fields, filter/calc roles, gate thresholds) is a
-# later-phase config exercise and is intentionally absent here.
+# Sections: [inbox], [activation], [buckets], [auth] (Phase 1); [triage], [ai],
+# and the [[buybox.fields]] catalog (Phase 2).
 
 [inbox]
 # The dedicated deals-only mailbox DealDesk owns and watches.
@@ -28,3 +27,59 @@ credential_env = "GOOGLE_SERVICE_ACCOUNT_KEY"
 # Gmail access uses domain-wide delegation: the service account impersonates the
 # inbox user. Must be the deals mailbox address.
 delegated_subject = "deals@cgm-ventures.com"
+
+[triage]
+# Google Sheet holding the Triage Log (per-Property system of record). Reuse the
+# Calculator's spreadsheet or a sibling — one service-account auth covers both.
+# Set this before the first live `dealdesk run`.
+spreadsheet_id = "REPLACE_WITH_DEALS_TRIAGE_SPREADSHEET_ID"
+tab = "DEALS_TRIAGE"
+
+[ai]
+# Last-resort extraction fallback (Anthropic), used only when the deterministic
+# rungs can't recover the must-have fields. `model` is operator-tunable: the
+# default is the most capable model; switch to a cheaper one (e.g. a Haiku) to
+# cut cost once volume is understood.
+model = "claude-opus-4-8"
+api_key_env = "ANTHROPIC_API_KEY"
+
+# --- Buy Box field catalog --------------------------------------------------
+# PLACEHOLDER VALUES — design examples per CONTEXT.md / the PRD, NOT the
+# operator's final buying criteria. Tune every threshold before going live.
+#
+# Each field carries two independent roles:
+#   filter = "gate" | "none"            (does the field gate the deal?)
+#   calc   = "feed-required" | "feed-optional" | "none"  (Calculator input?)
+# A gate field also needs an `op` (>=, <=, >, <, ==, in, not_in) and `threshold`.
+# "Must-have" extraction fields are derived from this catalog (gate + feed-required).
+
+[[buybox.fields]]
+name = "purchase_price"
+filter = "gate"
+op = "<="
+threshold = 300000
+calc = "feed-required"
+
+[[buybox.fields]]
+name = "year_built"
+filter = "gate"
+op = ">="
+threshold = 2000
+calc = "none"
+
+[[buybox.fields]]
+name = "city"
+filter = "gate"
+op = "in"
+threshold = ["dallas", "fort worth", "arlington", "irving", "garland", "plano", "mesquite", "grand prairie"]
+calc = "none"
+
+[[buybox.fields]]
+name = "monthly_rent"
+filter = "none"
+calc = "feed-required"
+
+[[buybox.fields]]
+name = "arv"
+filter = "none"
+calc = "feed-optional"

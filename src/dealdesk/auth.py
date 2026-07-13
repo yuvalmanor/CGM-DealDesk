@@ -15,8 +15,11 @@ from googleapiclient.discovery import build
 
 from .config import Config
 
-# Read-only. Later phases that label/send will widen this.
+# Discovery (Phase 1) needs read only. The pipeline (Phase 2) needs modify to
+# apply Bucket labels, plus Sheets to write the Triage Log.
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 
 
 def load_credentials(config: Config, scopes: list[str]):
@@ -34,7 +37,14 @@ def load_credentials(config: Config, scopes: list[str]):
     return creds.with_subject(config.delegated_subject)
 
 
-def build_gmail_service(config: Config):
-    """Build an authorized read-only Gmail API client."""
-    creds = load_credentials(config, [GMAIL_READONLY_SCOPE])
+def build_gmail_service(config: Config, scopes: list[str] | None = None):
+    """Build an authorized Gmail API client. Defaults to read-only (discovery);
+    the pipeline passes ``[GMAIL_MODIFY_SCOPE]`` so it can apply Bucket labels."""
+    creds = load_credentials(config, scopes or [GMAIL_READONLY_SCOPE])
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+
+def build_sheets_service(config: Config):
+    """Build an authorized Google Sheets API client for the Triage Log write."""
+    creds = load_credentials(config, [SHEETS_SCOPE])
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)

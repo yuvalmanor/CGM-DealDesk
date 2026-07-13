@@ -1,8 +1,9 @@
-"""Lightweight value types shared across the read half."""
+"""Lightweight value types shared across the pipeline."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 
 
 @dataclass(frozen=True)
@@ -14,3 +15,45 @@ class MessageMeta:
     from_addr: str
     subject: str
     date: str
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """A downloaded Email attachment. ``data`` is the raw bytes; the Extraction
+    Ladder pulls text out of PDFs."""
+
+    filename: str
+    mime_type: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class Email:
+    """A full Email — headers, plain-text body, and downloaded attachments —
+    the unit the Orchestrator processes."""
+
+    id: str
+    from_addr: str
+    subject: str
+    date: str
+    body_text: str
+    attachments: tuple[Attachment, ...] = field(default_factory=tuple)
+
+
+class Verdict(str, Enum):
+    """Per-Property Buy Box outcome (decided by filter-role fields only)."""
+
+    PASS = "Pass"
+    NEEDS_HUMAN = "Needs-Human"
+    REJECT = "Reject"
+
+
+class Bucket(str, Enum):
+    """Email-level workflow state — an Email ends in exactly one Bucket (a Gmail
+    label). ``Error`` is the only retryable Bucket."""
+
+    PASSED_BUYBOX = "Passed-BuyBox"
+    NEEDS_HUMAN = "Needs-Human"
+    REJECTED = "Rejected"
+    NOT_A_DEAL = "Not-A-Deal"
+    ERROR = "Error"
