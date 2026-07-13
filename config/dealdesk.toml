@@ -1,0 +1,30 @@
+# DealDesk runtime configuration.
+#
+# Phase 1 reads only the [inbox], [activation], [buckets], and [auth] sections.
+# The Buy Box field catalog (fields, filter/calc roles, gate thresholds) is a
+# later-phase config exercise and is intentionally absent here.
+
+[inbox]
+# The dedicated deals-only mailbox DealDesk owns and watches.
+address = "deals@cgm-ventures.com"
+
+[activation]
+# Only Emails received on/after the activation cutoff are processed; older
+# backlog is left untouched. An explicit `cutoff` date wins. Move it back
+# deliberately to sweep older backlog. If `cutoff` is omitted, the cutoff is
+# computed as (today - lookback_days).
+cutoff = "2026-06-28"
+lookback_days = 14
+
+[buckets]
+# The Bucket labels that mark an Email as already processed. The work-queue
+# query excludes any Email carrying one of these, so nothing is re-examined.
+labels = ["Passed-BuyBox", "Needs-Human", "Rejected", "Not-A-Deal", "Error"]
+
+[auth]
+# Name of the environment variable holding the shared Calculator service-account
+# JSON key (reused, one credential for Gmail + Sheets).
+credential_env = "GOOGLE_SERVICE_ACCOUNT_KEY"
+# Gmail access uses domain-wide delegation: the service account impersonates the
+# inbox user. Must be the deals mailbox address.
+delegated_subject = "deals@cgm-ventures.com"

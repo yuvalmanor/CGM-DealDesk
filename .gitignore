@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Secrets — the service-account JSON is supplied via env, never committed
+.env
+.env.local
+*service-account*.json
