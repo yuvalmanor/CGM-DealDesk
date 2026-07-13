@@ -138,3 +138,19 @@ def test_empty_queue():
     messages = _FakeMessages({None: {"messages": []}}, {})
     gateway = GmailGateway(_FakeService(messages))
     assert gateway.fetch_work_queue(date(2026, 6, 28), LABELS) == []
+
+
+def test_limit_stops_pagination_and_caps_reads():
+    pages = {
+        None: {"messages": [{"id": "a"}], "nextPageToken": "p2"},
+        "p2": {"messages": [{"id": "b"}]},
+    }
+    details = {"a": _detail("a", "x@one.com", "s", "d")}
+    messages = _FakeMessages(pages, details)
+    gateway = GmailGateway(_FakeService(messages))
+
+    result = gateway.fetch_work_queue(date(2026, 6, 28), LABELS, limit=1)
+
+    assert [m.id for m in result] == ["a"]
+    assert len(messages.list_calls) == 1  # did not page to p2
+    assert len(messages.get_calls) == 1   # only one metadata fetch

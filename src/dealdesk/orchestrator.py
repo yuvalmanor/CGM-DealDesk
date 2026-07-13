@@ -31,7 +31,10 @@ class EmailResult:
     email_id: str
     bucket: Bucket
     properties: list[tuple[dict, Evaluation]] = field(default_factory=list)
+    used_ai: bool = False
     error: str | None = None
+    subject: str = ""
+    sender: str = ""
 
 
 class Orchestrator:
@@ -42,8 +45,8 @@ class Orchestrator:
         self._buybox = buybox
         self._dry_run = dry_run
 
-    def run(self, cutoff: date, bucket_labels) -> list[EmailResult]:
-        metas = self._gmail.fetch_work_queue(cutoff, bucket_labels)
+    def run(self, cutoff: date, bucket_labels, limit: int | None = None) -> list[EmailResult]:
+        metas = self._gmail.fetch_work_queue(cutoff, bucket_labels, limit)
         results: list[EmailResult] = []
         for meta in metas:
             email = self._gmail.fetch_email(meta.id)
@@ -52,7 +55,8 @@ class Orchestrator:
 
     def process_email(self, email: Email) -> EmailResult:
         try:
-            properties = self._ladder.extract(email)
+            extraction = self._ladder.extract(email)
+            properties = extraction.properties
             evaluations = [evaluate(fields, self._buybox) for fields in properties]
             bucket = roll_up([e.verdict for e in evaluations])
 
@@ -66,8 +70,17 @@ class Orchestrator:
                 # Label LAST — an Email is "done" only once it carries a Bucket.
                 self._gmail.apply_label(email.id, bucket.value)
 
-            return EmailResult(email.id, bucket, list(zip(properties, evaluations)))
+            return EmailResult(
+                email.id,
+                bucket,
+                list(zip(properties, evaluations)),
+                used_ai=extraction.used_ai,
+                subject=email.subject,
+                sender=email.from_addr,
+            )
         except Exception as exc:  # handled mid-run failure -> Error (retryable)
             if not self._dry_run:
                 self._gmail.apply_label(email.id, Bucket.ERROR.value)
-            return EmailResult(email.id, Bucket.ERROR, error=str(exc))
+            return EmailResult(
+                email.id, Bucket.ERROR, error=str(exc), subject=email.subject, sender=email.from_addr
+            )

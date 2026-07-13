@@ -7,6 +7,7 @@ the real gateway's idempotency contract: upsert keyed on (message-id, index)).
 import pytest
 
 from dealdesk.buybox import BuyBox, FieldSpec
+from dealdesk.extraction import ExtractionResult
 from dealdesk.models import Bucket, Email
 from dealdesk.orchestrator import Orchestrator
 
@@ -32,8 +33,8 @@ class _FakeGmail:
         self.labels = {}
         self._crash_pending = crash_on_label_once
 
-    def fetch_work_queue(self, cutoff, bucket_labels):
-        return self._metas
+    def fetch_work_queue(self, cutoff, bucket_labels, limit=None):
+        return self._metas[:limit] if limit else self._metas
 
     def fetch_email(self, msg_id):
         return self._emails[msg_id]
@@ -59,18 +60,30 @@ class _FakeSheets:
 
 
 class _FakeLadder:
-    def __init__(self, by_email):
+    def __init__(self, by_email, used_ai=False):
         self._by_email = by_email
+        self._used_ai = used_ai
 
     def extract(self, email):
         result = self._by_email[email.id]
         if isinstance(result, Exception):
             raise result
-        return result
+        return ExtractionResult(result, used_ai=self._used_ai)
 
 
-def _email(msg_id):
-    return Email(id=msg_id, from_addr="x@acme.com", subject="", date="d", body_text="body")
+def _email(msg_id, from_addr="x@acme.com", subject=""):
+    return Email(id=msg_id, from_addr=from_addr, subject=subject, date="d", body_text="body")
+
+
+def test_result_carries_subject_and_sender():
+    email = _email("e1", from_addr='"Acme" <blast@acme.com>', subject="123 Main St deal")
+    gmail = _FakeGmail([email])
+    orch = Orchestrator(gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX)
+
+    result = orch.process_email(email)
+
+    assert result.subject == "123 Main St deal"
+    assert result.sender == '"Acme" <blast@acme.com>'
 
 
 def _pass_fields():
@@ -92,6 +105,27 @@ def test_happy_path_passes_writes_row_and_labels():
     assert results[0].bucket is Bucket.PASSED_BUYBOX
     assert len(sheets.rows) == 1
     assert gmail.labels["e1"] == "Passed-BuyBox"
+
+
+def test_used_ai_flag_propagates_to_result():
+    gmail = _FakeGmail([_email("e1")])
+    ladder = _FakeLadder({"e1": [_pass_fields()]}, used_ai=True)
+    orch = Orchestrator(gmail, _FakeSheets(), ladder, BUYBOX)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.used_ai is True
+
+
+def test_limit_caps_emails_processed():
+    emails = [_email("e1"), _email("e2"), _email("e3")]
+    gmail = _FakeGmail(emails)
+    ladder = _FakeLadder({e.id: [_pass_fields()] for e in emails})
+    orch = Orchestrator(gmail, _FakeSheets(), ladder, BUYBOX)
+
+    results = orch.run(cutoff=None, bucket_labels=(), limit=2)
+
+    assert [r.email_id for r in results] == ["e1", "e2"]
 
 
 def test_multi_property_rollup_and_two_rows():

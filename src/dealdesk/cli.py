@@ -78,7 +78,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     import os
 
     ai = AnthropicFallback(config.ai_model, os.environ.get(config.ai_api_key_env))
-    ladder = ExtractionLadder(config.buybox, ai)
+    ladder = ExtractionLadder(config.buybox, ai, ai_enabled=not args.no_ai)
+
+    if args.no_ai and not args.dry_run:
+        print(
+            "warning: --no-ai on a live run files Emails on heuristics alone; unparseable "
+            "Emails can be misfiled (e.g. Not-A-Deal) and drop out of the queue. Dry-run recommended.",
+            file=sys.stderr,
+        )
 
     sheets = None
     if not args.dry_run:
@@ -89,12 +96,17 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
 
     mode = "DRY RUN — no writes or labels" if args.dry_run else "live — writes Triage Log, applies labels"
+    if args.no_ai:
+        mode += " · AI fallback DISABLED (heuristics only)"
     print(f"Inbox:  {config.inbox_address}")
     print(f"Cutoff: {cutoff:%Y-%m-%d}  ({mode})")
     print()
 
     orchestrator = Orchestrator(gmail, sheets, ladder, config.buybox, dry_run=args.dry_run)
-    results = orchestrator.run(cutoff, config.bucket_labels)
+    results = orchestrator.run(cutoff, config.bucket_labels, limit=args.limit)
+
+    if args.verbose:
+        _print_verbose(results)
 
     counts: dict[str, int] = {}
     for r in results:
@@ -103,7 +115,37 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"Emails processed: {len(results)}")
     for bucket, n in sorted(counts.items()):
         print(f"  {bucket:<14} {n}")
+
+    ai_used = sum(1 for r in results if r.used_ai)
+    print(f"AI fallback used: {ai_used} of {len(results)} emails")
     return 0
+
+
+def _print_verbose(results) -> None:
+    print("=== per-email ===")
+    print(f"  {'':<3}{'Bucket':<14} {'Sender':<28} Subject")
+    print(f"  {'':<3}{'-' * 14} {'-' * 28} {'-' * 34}")
+    for r in results:
+        marker = "AI " if r.used_ai else "   "
+        sender = _fmt_sender(r.sender)
+        subject = r.subject or "(no subject)"
+        print(f"  {marker}{r.bucket.value:<14} {sender:<28.28} {subject[:44]}")
+        if r.error:
+            print(f"       ! ERROR: {r.error}")
+            continue
+        for i, (fields, ev) in enumerate(r.properties):
+            address = str(fields.get("address", "")) or "(no address)"
+            calc = "calc-ready" if ev.calc_ready else "not-calc-ready"
+            reasons = "; ".join(ev.reasons)
+            print(f"       #{i} {ev.verdict.value:<12} {calc:<14} {address[:32]:<32} | {reasons}")
+    print()
+
+
+def _fmt_sender(raw: str) -> str:
+    from email.utils import parseaddr
+
+    _, addr = parseaddr(raw or "")
+    return addr or (raw or "(unknown)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,6 +177,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Extract, evaluate, and print without writing the Triage Log or applying labels",
+    )
+    run.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Process at most N Emails (caps reads and AI cost); useful for a first live test",
+    )
+    run.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print each Email's Bucket, whether the AI fallback fired, and per-Property verdict + reasons",
+    )
+    run.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="Disable the AI fallback (heuristics only) — zero token cost for scouting a large batch",
     )
     run.set_defaults(func=_cmd_run)
     return parser

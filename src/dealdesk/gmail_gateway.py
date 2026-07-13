@@ -28,11 +28,16 @@ class GmailGateway:
         self._label_ids: dict[str, str] = {}  # name -> id, resolved lazily
 
     def fetch_work_queue(
-        self, cutoff: date, bucket_labels: tuple[str, ...] | list[str]
+        self,
+        cutoff: date,
+        bucket_labels: tuple[str, ...] | list[str],
+        limit: int | None = None,
     ) -> list[MessageMeta]:
         """Return header-only metadata for every unprocessed Inbox Email on/after
         the cutoff. Paginates the list; fetches metadata format only (no body,
-        no attachment download)."""
+        no attachment download). ``limit`` caps the number of Emails returned —
+        pagination and metadata fetches stop early, so it genuinely bounds reads
+        (and, downstream, AI cost)."""
         query = build_work_queue_query(cutoff, bucket_labels)
         messages = self._service.users().messages()
 
@@ -44,8 +49,11 @@ class GmailGateway:
             ).execute()
             ids.extend(m["id"] for m in resp.get("messages", []))
             page_token = resp.get("nextPageToken")
-            if not page_token:
+            if not page_token or (limit is not None and len(ids) >= limit):
                 break
+
+        if limit is not None:
+            ids = ids[:limit]
 
         result: list[MessageMeta] = []
         for msg_id in ids:

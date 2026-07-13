@@ -57,9 +57,10 @@ mark an Email as already processed, and the auth wiring.
 ## Usage
 
 ```bash
-dealdesk discover                 # read-only Source-by-volume tally (Phase 1)
-dealdesk run                      # triage the work queue (Phase 2)
-dealdesk run --dry-run            # extract + evaluate + print; no writes/labels
+dealdesk discover                       # read-only Source-by-volume tally (Phase 1)
+dealdesk run                            # triage the work queue (Phase 2)
+dealdesk run --dry-run                  # extract + evaluate + print; no writes/labels
+dealdesk run --dry-run --limit 5 --verbose   # preview 5 Emails, per-Property detail
 # or, without installing the console script:
 python -m dealdesk run --dry-run
 ```
@@ -70,9 +71,19 @@ label, or AI call.
 
 `run` triages each unprocessed Email: extract every Property, evaluate it against
 the Buy Box, roll up to a Bucket, upsert the Triage Log, and apply the Bucket
-label last. `--dry-run` extracts and evaluates but writes nothing and applies no
-label (it still reads the Inbox and may call the AI fallback). Both accept
-`--config PATH` and `--today YYYY-MM-DD` (to exercise the rolling cutoff).
+label last.
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Extract + evaluate + print only; writes nothing, applies no label. Still **reads** the Inbox and **still calls the AI fallback** (real tokens) when heuristics fall short. |
+| `--limit N` | Process at most N Emails; pagination and per-Email fetches stop early, so it genuinely bounds Gmail reads and AI cost. Ideal for a first live test. |
+| `--verbose` | Print each Email's Bucket, an `AI` marker when the fallback fired, and every Property's Verdict + calc-ready + reasons. |
+| `--no-ai` | Disable the AI fallback (heuristics only) — **zero token cost**, for scouting a large batch. Emails heuristics can't fully parse fall back to their best-effort partial fields (usually `Needs-Human` on the missing gate), or `Not-A-Deal` if no facts were found. Accuracy is degraded vs. the full ladder; pair with `--dry-run` (a live `--no-ai` run can misfile Emails and drop them from the queue). |
+| `--config PATH` | Point at a different config file. |
+| `--today YYYY-MM-DD` | Override "today" for the rolling cutoff. |
+
+The run summary always ends with `AI fallback used: X of N emails` so you can
+watch fallback cost across runs.
 
 Before the first live `run`, set `triage.spreadsheet_id` in the config and
 supply `ANTHROPIC_API_KEY` for the AI fallback. `run` needs the

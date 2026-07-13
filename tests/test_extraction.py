@@ -43,9 +43,10 @@ def test_pdf_text_feeds_the_ladder_without_ai():
 
     result = ladder.extract(email)
 
-    assert len(result) == 1
-    assert result[0]["purchase_price"] == 250000
-    assert ai.calls == []  # heuristics were sufficient — no AI call
+    assert result.used_ai is False  # heuristics were sufficient — no AI call
+    assert len(result.properties) == 1
+    assert result.properties[0]["purchase_price"] == 250000
+    assert ai.calls == []
 
 
 def test_body_and_pdf_combine_to_reach_must_haves():
@@ -62,8 +63,9 @@ def test_body_and_pdf_combine_to_reach_must_haves():
     result = ladder.extract(email)
 
     assert ai.calls == []
-    assert result[0]["year_built"] == 2005
-    assert result[0]["city"] == "Dallas"
+    assert result.used_ai is False
+    assert result.properties[0]["year_built"] == 2005
+    assert result.properties[0]["city"] == "Dallas"
 
 
 def test_unknown_source_falls_through_to_ai():
@@ -74,11 +76,37 @@ def test_unknown_source_falls_through_to_ai():
     result = ladder.extract(email)
 
     assert len(ai.calls) == 1  # deterministic rung fell short
-    assert result == [{"purchase_price": 199000, "city": "Dallas"}]
+    assert result.used_ai is True
+    assert result.properties == [{"purchase_price": 199000, "city": "Dallas"}]
+
+
+def test_no_ai_returns_partial_heuristics_without_calling_ai():
+    ai = _FakeAI(result=[{"should": "not be used"}])
+    ladder = ExtractionLadder(BUYBOX, ai, ai_enabled=False)
+    # Body has price + rent but no year/city — must-haves are incomplete.
+    email = _email(body="Asking Price: $250,000\nEstimated Rent: $2,000")
+
+    result = ladder.extract(email)
+
+    assert ai.calls == []          # AI never called
+    assert result.used_ai is False
+    assert result.properties[0]["purchase_price"] == 250000  # best-effort partial
+
+
+def test_no_ai_with_no_facts_yields_no_properties():
+    ai = _FakeAI(result=[{"x": 1}])
+    ladder = ExtractionLadder(BUYBOX, ai, ai_enabled=False)
+
+    result = ladder.extract(_email(body="just some prose, call me maybe"))
+
+    assert ai.calls == []
+    assert result.properties == []
 
 
 def test_empty_text_yields_no_properties_and_no_ai():
     ai = _FakeAI(result=[{"should": "not appear"}])
     ladder = ExtractionLadder(BUYBOX, ai)
-    assert ladder.extract(_email(body="   ")) == []
+    result = ladder.extract(_email(body="   "))
+    assert result.properties == []
+    assert result.used_ai is False
     assert ai.calls == []

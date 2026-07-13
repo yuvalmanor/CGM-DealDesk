@@ -32,7 +32,7 @@ delegated_subject = "deals@cgm-ventures.com"
 # Google Sheet holding the Triage Log (per-Property system of record). Reuse the
 # Calculator's spreadsheet or a sibling — one service-account auth covers both.
 # Set this before the first live `dealdesk run`.
-spreadsheet_id = "REPLACE_WITH_DEALS_TRIAGE_SPREADSHEET_ID"
+spreadsheet_id = "1KxArNSlh-g0vpj4TkXrEs2X6TS45CE_VHWFO6tXf3_M"
 tab = "DEALS_TRIAGE"
 
 [ai]
@@ -44,34 +44,30 @@ model = "claude-opus-4-8"
 api_key_env = "ANTHROPIC_API_KEY"
 
 # --- Buy Box field catalog --------------------------------------------------
-# PLACEHOLDER VALUES — design examples per CONTEXT.md / the PRD, NOT the
-# operator's final buying criteria. Tune every threshold before going live.
+# Operator-set criteria (2026-07-13): max purchase price 350k, built 1980 or
+# newer, no location gate. `monthly_rent`/`arv` calc roles are design decisions.
 #
 # Each field carries two independent roles:
 #   filter = "gate" | "none"            (does the field gate the deal?)
 #   calc   = "feed-required" | "feed-optional" | "none"  (Calculator input?)
 # A gate field also needs an `op` (>=, <=, >, <, ==, in, not_in) and `threshold`.
 # "Must-have" extraction fields are derived from this catalog (gate + feed-required).
+#
+# TODO (planned): add a property-type gate — SFH passes; mobile home and vacant
+# lot must be excluded (Reject). Deferred until extraction can classify type.
 
 [[buybox.fields]]
 name = "purchase_price"
 filter = "gate"
 op = "<="
-threshold = 300000
+threshold = 350000
 calc = "feed-required"
 
 [[buybox.fields]]
 name = "year_built"
 filter = "gate"
 op = ">="
-threshold = 2000
-calc = "none"
-
-[[buybox.fields]]
-name = "city"
-filter = "gate"
-op = "in"
-threshold = ["dallas", "fort worth", "arlington", "irving", "garland", "plano", "mesquite", "grand prairie"]
+threshold = 1980
 calc = "none"
 
 [[buybox.fields]]
