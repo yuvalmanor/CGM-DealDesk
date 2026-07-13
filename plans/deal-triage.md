@@ -41,9 +41,9 @@ Project scaffold (Python, pytest, config loader, single entry point) and the **r
 ### Acceptance criteria
 
 - [x] `pip install` / venv + pytest run cleanly; one documented entry command exists.
-- [ ] Service-account auth loads the shared Calculator credential and authorizes Gmail read. _(Load path + missing-credential handling verified; the real domain-wide-delegation authorization handshake needs a one-time live-credential smoke run by the operator.)_
+- [x] Service-account auth loads the shared Calculator credential and authorizes Gmail read. _(Verified live: `cgm-deal-calc-sheets` SA + domain-wide delegation for gmail.readonly authorized a real read of `deals@cgm-ventures.com`.)_
 - [x] Work-queue query returns only Inbox Emails on/after the cutoff; changing the cutoff config changes the set (and can be moved back to sweep older backlog). _(Query scoping + cutoff-sensitivity verified live and by unit/gateway tests.)_
-- [ ] Discovery command prints a Source-by-volume tally over the activation window. _(Tally ranking/percentages/format unit-tested; live end-to-end print gated on the same credential smoke run as the auth criterion.)_
+- [x] Discovery command prints a Source-by-volume tally over the activation window. _(Verified live: 437 candidate Emails tallied into a Pareto ranking; ~7 Sources cover 80%.)_
 - [x] No message is labeled, moved, or written anywhere during a discovery run. _(Gateway only calls list + get(metadata); read-only scope; gateway test asserts no mutating call; no write code exists in Phase 1.)_
 
 ---
