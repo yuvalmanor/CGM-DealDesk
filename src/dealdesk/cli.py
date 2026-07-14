@@ -25,8 +25,10 @@ from .auth import (
     build_gmail_service,
     build_sheets_service,
 )
+from .calculator_gateway import CalculatorGateway
 from .config import Config
 from .cutoff import resolve_cutoff
+from .deal_input import should_feed
 from .discovery import tally_sources
 from .extraction import ExtractionLadder
 from .gmail_gateway import GmailGateway
@@ -88,21 +90,34 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
 
     sheets = None
+    calculator = None
     if not args.dry_run:
         if not config.triage_spreadsheet_id:
             raise RuntimeError("triage.spreadsheet_id is not set; the Triage Log has nowhere to write.")
-        sheets = SheetsGateway(
-            build_sheets_service(config), config.triage_spreadsheet_id, config.triage_tab
-        )
+        if not config.calc_spreadsheet_id:
+            raise RuntimeError(
+                "calculator.spreadsheet_id is not set; qualifying deals have nowhere to feed."
+            )
+        sheets_service = build_sheets_service(config)  # one service covers both tabs
+        sheets = SheetsGateway(sheets_service, config.triage_spreadsheet_id, config.triage_tab)
+        calculator = CalculatorGateway(sheets_service, config.calc_spreadsheet_id, config.calc_tab)
 
-    mode = "DRY RUN — no writes or labels" if args.dry_run else "live — writes Triage Log, applies labels"
+    mode = "DRY RUN — no writes or labels" if args.dry_run else "live — writes Triage Log, feeds Calculator, applies labels"
     if args.no_ai:
         mode += " · AI fallback DISABLED (heuristics only)"
     print(f"Inbox:  {config.inbox_address}")
     print(f"Cutoff: {cutoff:%Y-%m-%d}  ({mode})")
     print()
 
-    orchestrator = Orchestrator(gmail, sheets, ladder, config.buybox, dry_run=args.dry_run)
+    orchestrator = Orchestrator(
+        gmail,
+        sheets,
+        ladder,
+        config.buybox,
+        dry_run=args.dry_run,
+        calculator=calculator,
+        assumptions=config.assumptions,
+    )
     results = orchestrator.run(cutoff, config.bucket_labels, limit=args.limit)
 
     if args.verbose:
@@ -118,6 +133,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     ai_used = sum(1 for r in results if r.used_ai)
     print(f"AI fallback used: {ai_used} of {len(results)} emails")
+
+    deals_fed = sum(r.deals_fed for r in results)
+    fed_verb = "would feed" if args.dry_run else "fed"
+    print(f"Calculator: {fed_verb} {deals_fed} calc-ready deal(s) to {config.calc_tab}")
     return 0
 
 
@@ -136,8 +155,9 @@ def _print_verbose(results) -> None:
         for i, (fields, ev) in enumerate(r.properties):
             address = str(fields.get("address", "")) or "(no address)"
             calc = "calc-ready" if ev.calc_ready else "not-calc-ready"
+            fed = "FEED" if should_feed(ev) else "    "
             reasons = "; ".join(ev.reasons)
-            print(f"       #{i} {ev.verdict.value:<12} {calc:<14} {address[:32]:<32} | {reasons}")
+            print(f"       #{i} {fed} {ev.verdict.value:<12} {calc:<14} {address[:30]:<30} | {reasons}")
     print()
 
 

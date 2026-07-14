@@ -8,17 +8,22 @@ Inbox. See [CONTEXT.md](CONTEXT.md), [ADR-0001](docs/adr/0001-local-python-pipel
 
 ## Status
 
-**Phase 2 — Tracer bullet: Email → Verdict → Bucket → Triage Log.** The full
-triage spine end-to-end with **no Source Templates** — the Extraction Ladder runs
-on generic heuristics + AI fallback only, over email bodies and attached PDFs.
-For each Email: extract every Property, evaluate each against the Buy Box, roll
-the Verdicts up to one Bucket, upsert a Triage Log row per Property (idempotent on
-message-id + index), and apply the Bucket label **last**. A handled mid-run
-failure lands the Email in `Error`. No Calculator feed, no notifications yet
-(Phases 3–4).
+**Phase 3 — Calculator feed.** Qualifying deals are now written downstream into
+the Calculator's `DEALS_APP` tab (ADR-0002). The **Deal Input Builder** maps a
+Property's extracted fields to a *partial* `Deal` — all five marker keys always
+present, ARV written as `0` when unknown, and the `hmlLevPP`/`refiLtv` assumption
+markers carrying real config values (never `0`). A Property is fed **iff it is
+Calc-ready and its Verdict is Pass or Needs-Human** — a Reject is never fed. The
+`DEALS_APP` row id is derived deterministically from the Triage key
+`(message-id, property index)`, stored on the Triage Log row as the triage→
+Calculator link, and re-used on re-run so the feed is idempotent (no duplicate
+deal on a crash/retry). The Calculator backfills its own standing assumptions
+from `DEFAULT_DEAL` and computes results live on open.
 
-Phase 1 (read half — service-account auth, the work-queue query, the read-only
-`discover` command) is unchanged.
+Earlier phases are unchanged: the read half (Phase 1 — auth, work-queue query,
+read-only `discover`) and the triage spine (Phase 2 — extract → evaluate → roll
+up → Triage Log → Bucket label **last**, with a handled mid-run failure landing
+in `Error`). Notifications are still Phase 4.
 
 ## Setup
 
@@ -70,8 +75,9 @@ candidate Emails by Source over the activation window. It makes **no** write,
 label, or AI call.
 
 `run` triages each unprocessed Email: extract every Property, evaluate it against
-the Buy Box, roll up to a Bucket, upsert the Triage Log, and apply the Bucket
-label last.
+the Buy Box, roll up to a Bucket, upsert the Triage Log, **feed every calc-ready
+Pass/Needs-Human Property into the Calculator's `DEALS_APP` tab**, and apply the
+Bucket label last. The run summary ends with how many deals were fed.
 
 | Flag | Effect |
 |---|---|
@@ -85,9 +91,13 @@ label last.
 The run summary always ends with `AI fallback used: X of N emails` so you can
 watch fallback cost across runs.
 
-Before the first live `run`, set `triage.spreadsheet_id` in the config and
-supply `ANTHROPIC_API_KEY` for the AI fallback. `run` needs the
-`gmail.modify` and `spreadsheets` scopes (discovery uses only `gmail.readonly`).
+Before the first live `run`, set `triage.spreadsheet_id` and
+`calculator.spreadsheet_id` in the config (the latter is the Calculator's
+`DEALS_APP` sheet — the same spreadsheet by default) and supply `ANTHROPIC_API_KEY`
+for the AI fallback. `run` needs the `gmail.modify` and `spreadsheets` scopes
+(discovery uses only `gmail.readonly`). The `[calculator]` section also carries
+the standing financing assumptions (`hml_lev_pp`, `refi_ltv`) fed into every
+Deal — keep them in sync with the Calculator's `DEFAULT_DEAL`.
 
 ### Buy Box configuration
 

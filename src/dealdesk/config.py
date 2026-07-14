@@ -15,6 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from .buybox import BuyBox
+from .deal_input import Assumptions
 
 # Repo-root-relative default, resolved from this file's location so the entry
 # command works regardless of the caller's working directory.
@@ -32,6 +33,9 @@ class Config:
     buybox: BuyBox = field(default_factory=BuyBox)
     triage_spreadsheet_id: str = ""
     triage_tab: str = "DEALS_TRIAGE"
+    calc_spreadsheet_id: str = ""
+    calc_tab: str = "DEALS_APP"
+    assumptions: Assumptions = field(default_factory=lambda: Assumptions(0.0, 0.0))
     ai_model: str = "claude-opus-4-8"
     ai_api_key_env: str = "ANTHROPIC_API_KEY"
 
@@ -49,6 +53,7 @@ class Config:
         buckets = raw.get("buckets", {})
         auth = raw.get("auth", {})
         triage = raw.get("triage", {})
+        calculator = raw.get("calculator", {})
         ai = raw.get("ai", {})
 
         cutoff_raw = activation.get("cutoff")
@@ -73,6 +78,12 @@ class Config:
             buybox=BuyBox.from_dict(raw.get("buybox")),
             triage_spreadsheet_id=triage.get("spreadsheet_id", ""),
             triage_tab=triage.get("tab", "DEALS_TRIAGE"),
+            calc_spreadsheet_id=calculator.get("spreadsheet_id", ""),
+            calc_tab=calculator.get("tab", "DEALS_APP"),
+            assumptions=Assumptions(
+                hml_lev_pp=float(calculator.get("hml_lev_pp", 0.0)),
+                refi_ltv=float(calculator.get("refi_ltv", 0.0)),
+            ),
             ai_model=ai.get("model", "claude-opus-4-8"),
             ai_api_key_env=ai.get("api_key_env", "ANTHROPIC_API_KEY"),
         )

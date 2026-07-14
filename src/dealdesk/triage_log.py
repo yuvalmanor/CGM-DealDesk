@@ -72,7 +72,13 @@ class TriageRow:
         ]
 
 
-def build_triage_row(email: Email, index: int, fields: dict, evaluation: Evaluation) -> TriageRow:
+def build_triage_row(
+    email: Email,
+    index: int,
+    fields: dict,
+    evaluation: Evaluation,
+    deals_app_row_id: str = "",
+) -> TriageRow:
     return TriageRow(
         message_id=email.id,
         property_index=index,
@@ -84,4 +90,5 @@ def build_triage_row(email: Email, index: int, fields: dict, evaluation: Evaluat
         reasons="; ".join(evaluation.reasons),
         calc_ready=evaluation.calc_ready,
         missing_fields="; ".join(evaluation.missing_fields),
+        deals_app_row_id=deals_app_row_id,
     )

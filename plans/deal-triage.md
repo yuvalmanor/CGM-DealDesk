@@ -78,11 +78,11 @@ Add the downstream Calculator sink. The Deal Input Builder maps DealDesk Propert
 
 ### Acceptance criteria
 
-- [ ] A Calc-ready Pass or Needs-Human Property is written to `DEALS_APP`; a Reject is never written.
-- [ ] A Property missing a feed-required input (e.g. rent) is not fed; one missing only a feed-optional input (ARV) is fed with `arv: 0`.
-- [ ] Every written row carries all five marker keys; `hmlLevPP`/`refiLtv` carry real model values (never `0`).
-- [ ] The Triage Log row stores and links to the `DEALS_APP` row id; a re-run updates that row rather than creating a duplicate (idempotent feed).
-- [ ] Deal Input Builder golden tests cover marker-key presence, the `arv: 0` sentinel, real assumption markers, and the field mapping.
+- [x] A Calc-ready Pass or Needs-Human Property is written to `DEALS_APP`; a Reject is never written. _(`deal_input.should_feed` + Orchestrator feed; `test_orchestrator` calc-ready Pass/Needs-Human fed, Reject never fed; verified live via the feed drive.)_
+- [x] A Property missing a feed-required input (e.g. rent) is not fed; one missing only a feed-optional input (ARV) is fed with `arv: 0`. _(`test_orchestrator::test_not_calc_ready_pass_is_not_fed`; `test_deal_input` arv:0 sentinel; live drive Case 2 fed with `arv:0`, Case 3 rent-missing not fed.)_
+- [x] Every written row carries all five marker keys; `hmlLevPP`/`refiLtv` carry real model values (never `0`). _(`build_deal_input` always writes `MARKER_KEYS`; refuses a 0 assumption; `test_deal_input` marker/assumption golden + `test_calculator_gateway` row-schema; live drive shows all 5 keys, `hmlLevPP=69.565`/`refiLtv=65`.)_
+- [x] The Triage Log row stores and links to the `DEALS_APP` row id; a re-run updates that row rather than creating a duplicate (idempotent feed). _(Deterministic `feed_row_id` stored on the Triage row; `test_orchestrator::test_calc_ready_pass_is_fed_and_triage_stores_row_id` + `test_rerun_does_not_duplicate_the_fed_deal`; `test_calculator_gateway` same-id updates in place.)_
+- [x] Deal Input Builder golden tests cover marker-key presence, the `arv: 0` sentinel, real assumption markers, and the field mapping. _(`tests/test_deal_input.py`.)_
 
 ---
 

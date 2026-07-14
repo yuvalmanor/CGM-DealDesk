@@ -35,6 +35,23 @@ delegated_subject = "deals@cgm-ventures.com"
 spreadsheet_id = "1KxArNSlh-g0vpj4TkXrEs2X6TS45CE_VHWFO6tXf3_M"
 tab = "DEALS_TRIAGE"
 
+[calculator]
+# Downstream sink: the Calculator's DEALS_APP tab (ADR-0002). Same spreadsheet as
+# the Triage Log here (the Calculator's GOOGLE_SHEET_ID), but its own tab, its own
+# id key, and its own schema (owned by brrrr-calculator). DealDesk writes a
+# partial Deal; the Calculator backfills the rest from its DEFAULT_DEAL and
+# computes results on open.
+spreadsheet_id = "1KxArNSlh-g0vpj4TkXrEs2X6TS45CE_VHWFO6tXf3_M"
+tab = "DEALS_APP"
+
+# Standing financing assumptions DealDesk carries into every fed Deal — mirror
+# the Calculator's DEFAULT_DEAL. They are *marker keys* the loader requires, so
+# DealDesk must write them, and with REAL values: a 0 would pass the key guard but
+# silently zero out leverage and corrupt the math (ADR-0002). Update these if the
+# Calculator's DEFAULT_DEAL changes.
+hml_lev_pp = 69.565
+refi_ltv = 65
+
 [ai]
 # Last-resort extraction fallback (Anthropic), used only when the deterministic
 # rungs can't recover the must-have fields. `model` is operator-tunable: the

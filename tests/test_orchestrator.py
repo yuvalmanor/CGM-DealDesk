@@ -7,6 +7,7 @@ the real gateway's idempotency contract: upsert keyed on (message-id, index)).
 import pytest
 
 from dealdesk.buybox import BuyBox, FieldSpec
+from dealdesk.deal_input import Assumptions, feed_row_id
 from dealdesk.extraction import ExtractionResult
 from dealdesk.models import Bucket, Email
 from dealdesk.orchestrator import Orchestrator
@@ -19,6 +20,8 @@ BUYBOX = BuyBox(
         FieldSpec("monthly_rent", "none", "feed-required"),
     )
 )
+
+ASSUMPTIONS = Assumptions(hml_lev_pp=69.565, refi_ltv=65)
 
 
 class _Crash(BaseException):
@@ -57,6 +60,19 @@ class _FakeSheets:
         self.upsert_calls += 1
         for r in rows:
             self.rows[r.key] = r
+
+
+class _FakeCalculator:
+    """Idempotent DEALS_APP feed keyed on row id — the real gateway's contract."""
+
+    def __init__(self):
+        self.deals = {}
+        self.upsert_calls = 0
+
+    def upsert_deal(self, row_id, deal_input):
+        self.upsert_calls += 1
+        self.deals[row_id] = deal_input
+        return row_id
 
 
 class _FakeLadder:
@@ -161,6 +177,117 @@ def test_handled_failure_lands_in_error():
 
     assert result.bucket is Bucket.ERROR
     assert gmail.labels["e1"] == "Error"
+
+
+def _needs_human_calc_ready_fields():
+    # Missing a gate field (year_built) -> Needs-Human; price + rent present -> calc-ready.
+    return {"purchase_price": 250000, "city": "Dallas", "monthly_rent": 2000}
+
+
+def _pass_not_calc_ready_fields():
+    # Passes gates, but missing feed-required rent -> not calc-ready.
+    return {"purchase_price": 250000, "year_built": 2010, "city": "Dallas"}
+
+
+def _feeding_orch(gmail, sheets, ladder, calculator):
+    return Orchestrator(
+        gmail, sheets, ladder, BUYBOX, calculator=calculator, assumptions=ASSUMPTIONS
+    )
+
+
+def test_calc_ready_pass_is_fed_and_triage_stores_row_id():
+    gmail = _FakeGmail([_email("e1")])
+    sheets = _FakeSheets()
+    calc = _FakeCalculator()
+    orch = _feeding_orch(gmail, sheets, _FakeLadder({"e1": [_pass_fields()]}), calc)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.deals_fed == 1
+    row_id = feed_row_id("e1", 0)
+    assert row_id in calc.deals
+    assert calc.deals[row_id]["purchasePrice"] == 250000
+    # The Triage row links to the DEALS_APP row it fed.
+    assert sheets.rows[("e1", "0")].deals_app_row_id == row_id
+
+
+def test_calc_ready_needs_human_is_fed():
+    gmail = _FakeGmail([_email("e1")])
+    calc = _FakeCalculator()
+    orch = _feeding_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [_needs_human_calc_ready_fields()]}), calc)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.bucket is Bucket.NEEDS_HUMAN
+    assert result.deals_fed == 1
+    assert feed_row_id("e1", 0) in calc.deals
+
+
+def test_reject_is_never_fed():
+    gmail = _FakeGmail([_email("e1")])
+    calc = _FakeCalculator()
+    orch = _feeding_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [_reject_fields()]}), calc)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.bucket is Bucket.REJECTED
+    assert result.deals_fed == 0
+    assert calc.deals == {}
+
+
+def test_not_calc_ready_pass_is_not_fed():
+    gmail = _FakeGmail([_email("e1")])
+    sheets = _FakeSheets()
+    calc = _FakeCalculator()
+    orch = _feeding_orch(gmail, sheets, _FakeLadder({"e1": [_pass_not_calc_ready_fields()]}), calc)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.deals_fed == 0
+    assert calc.deals == {}
+    assert sheets.rows[("e1", "0")].deals_app_row_id == ""  # no link stored
+
+
+def test_multi_property_feeds_only_the_qualifying_one():
+    gmail = _FakeGmail([_email("e1")])
+    sheets = _FakeSheets()
+    calc = _FakeCalculator()
+    # index 0 Reject (not fed), index 1 Pass (fed).
+    orch = _feeding_orch(gmail, sheets, _FakeLadder({"e1": [_reject_fields(), _pass_fields()]}), calc)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.deals_fed == 1
+    assert list(calc.deals) == [feed_row_id("e1", 1)]
+    assert sheets.rows[("e1", "0")].deals_app_row_id == ""      # Reject: no link
+    assert sheets.rows[("e1", "1")].deals_app_row_id == feed_row_id("e1", 1)
+
+
+def test_rerun_does_not_duplicate_the_fed_deal():
+    gmail = _FakeGmail([_email("e1")])
+    calc = _FakeCalculator()
+    orch = _feeding_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), calc)
+
+    orch.process_email(gmail.fetch_email("e1"))
+    orch.process_email(gmail.fetch_email("e1"))  # next daily run
+
+    assert len(calc.deals) == 1        # idempotent by deterministic id
+    assert calc.upsert_calls == 2      # it really did write again
+
+
+def test_dry_run_previews_feed_without_writing():
+    gmail = _FakeGmail([_email("e1")])
+    calc = _FakeCalculator()
+    orch = Orchestrator(
+        gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX,
+        dry_run=True, calculator=calc, assumptions=ASSUMPTIONS,
+    )
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.deals_fed == 1   # previewed
+    assert calc.deals == {}        # but nothing written
+    assert "e1" not in gmail.labels
 
 
 def test_crash_before_label_reruns_without_duplicating_row():
