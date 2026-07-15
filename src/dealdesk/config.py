@@ -40,6 +40,7 @@ class Config:
     ai_api_key_env: str = "ANTHROPIC_API_KEY"
     notify_to: str = ""
     notify_from: str = ""
+    notify_label: str = ""
 
     @property
     def calc_link(self) -> str:
@@ -101,4 +102,5 @@ class Config:
             # Deal Notifications must come *from* the deals mailbox so the
             # operator's existing filter routes them; default to the inbox.
             notify_from=notify.get("from", inbox["address"]),
+            notify_label=notify.get("label", ""),
         )

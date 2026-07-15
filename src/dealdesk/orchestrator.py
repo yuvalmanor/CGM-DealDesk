@@ -67,6 +67,7 @@ class Orchestrator:
         assumptions: Assumptions | None = None,
         notify_to: str = "",
         notify_from: str = "",
+        notify_label: str = "",
         calc_link: str = "",
     ):
         self._gmail = gmail
@@ -78,6 +79,7 @@ class Orchestrator:
         self._assumptions = assumptions
         self._notify_to = notify_to
         self._notify_from = notify_from
+        self._notify_label = notify_label
         self._calc_link = calc_link
 
     def run(self, cutoff: date, bucket_labels, limit: int | None = None) -> list[EmailResult]:
@@ -186,7 +188,8 @@ class Orchestrator:
                 resend_flag=str(fields.get("resend_flag", "")),
             )
             self._gmail.send_message(
-                self._notify_to, notification.subject, notification.body, self._notify_from
+                self._notify_to, notification.subject, notification.body,
+                self._notify_from, label=self._notify_label or None,
             )
 
     def _send_digest(self, results: list[EmailResult]) -> None:
@@ -196,7 +199,8 @@ class Orchestrator:
             return
         digest = build_digest(results)
         self._gmail.send_message(
-            self._notify_to, digest.subject, digest.body, self._notify_from
+            self._notify_to, digest.subject, digest.body,
+            self._notify_from, label=self._notify_label or None,
         )
 
     def _calc_link_for(self, row_id: str | None) -> str:

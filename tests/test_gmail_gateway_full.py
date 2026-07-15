@@ -158,3 +158,18 @@ def test_send_message_encodes_from_subject_and_body():
     assert "To: operator@example.com" in raw
     assert "Subject: Deal: 123 Main St" in raw
     assert "Price: $250,000" in raw
+
+
+def test_send_message_applies_label_to_sent_message():
+    messages = _FakeMessages(_message_with_attachment(), "")
+    labels = _FakeLabels([{"id": "L_DN", "name": "Deal Notifications"}])
+    gateway = GmailGateway(_FakeService(messages, labels))
+
+    gateway.send_message(
+        "deals@cgm-ventures.com", "Deal: 1 Oak", "body",
+        sender="deals@cgm-ventures.com", label="Deal Notifications",
+    )
+
+    # Existing label resolved (never re-created) and applied to the sent id.
+    assert labels.create_calls == []
+    assert messages.modify_calls == [("sent-1", {"addLabelIds": ["L_DN"]})]

@@ -79,7 +79,8 @@ def feed_row_id(message_id: str, index: int) -> str:
 def build_deal_input(fields: dict, assumptions: Assumptions) -> dict:
     """Build the partial ``Deal`` dict (the ``inputsJson`` payload) for a
     calc-ready Property. Callers feed only calc-ready Pass/Needs-Human Properties,
-    so the feed-required inputs (purchase price, rent) are present."""
+    so every feed-required input is present; feed-optional inputs (ARV, and now
+    rent) may be missing and are written as the ``0`` sentinel."""
     if not assumptions.hml_lev_pp or not assumptions.refi_ltv:
         # Guard the ADR-0002 invariant at the boundary: a 0 assumption marker
         # would pass the Calculator's key-presence guard but silently zero out
@@ -88,7 +89,10 @@ def build_deal_input(fields: dict, assumptions: Assumptions) -> dict:
 
     deal: dict = {
         "purchasePrice": _num(fields.get("purchase_price")),
-        "monthlyRent": _num(fields.get("monthly_rent")),
+        # Feed-optional (like ARV): missing/unparseable rent -> 0 sentinel, never
+        # null. monthlyRent is a marker key, so it must always carry a value; 0
+        # reads as "unknown, fill in" and the operator completes it in-app.
+        "monthlyRent": _num(fields.get("monthly_rent"), default=0),
         # Feed-optional: missing/unparseable ARV -> 0 sentinel ("unknown, fill in").
         "arv": _num(fields.get("arv"), default=0),
         "hmlLevPP": assumptions.hml_lev_pp,

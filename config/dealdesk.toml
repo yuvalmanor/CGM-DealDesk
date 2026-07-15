@@ -54,11 +54,13 @@ refi_ltv = 65
 
 [notify]
 # Where Deal Notifications and the Daily Digest are delivered. `from` must be the
-# deals mailbox so the operator's existing "Deal Notifications" Gmail filter routes
-# them (defaults to [inbox].address). Set `to` before the first live run, or
-# notifications are skipped with a warning.
-to = "yumanor@sensos.io"
+# deals mailbox (defaults to [inbox].address). Sent to the deals mailbox itself
+# (send-to-self). `label` (an existing Gmail label) is applied to each sent
+# message directly, so routing doesn't depend on a Gmail filter. Set `to` before
+# the first live run, or notifications are skipped with a warning.
+to = "deals@cgm-ventures.com"
 from = "deals@cgm-ventures.com"
+label = "Deal Notifications"
 
 [ai]
 # Last-resort extraction fallback (Anthropic), used only when the deterministic
@@ -69,9 +71,10 @@ model = "claude-opus-4-8"
 api_key_env = "ANTHROPIC_API_KEY"
 
 # --- Buy Box field catalog --------------------------------------------------
-# Operator-set criteria (2026-07-14): max purchase price 350k, built 1995 or
-# newer, single-family only (lots/mobile homes/condos etc. Reject), no location
-# gate. `monthly_rent`/`arv` calc roles are design decisions.
+# Operator-set criteria (2026-07-14): max purchase price 350k, built 1950 or
+# newer (relaxed from 1995 for a wider first live test), single-family only
+# (lots/mobile homes/condos etc. Reject), no location gate. `monthly_rent` and
+# `arv` are both feed-optional (fed even if blank, filled in the Calculator).
 #
 # Each field carries two independent roles:
 #   filter = "gate" | "none"            (does the field gate the deal?)
@@ -97,13 +100,13 @@ calc = "feed-required"
 name = "year_built"
 filter = "gate"
 op = ">="
-threshold = 1995
+threshold = 1950
 calc = "none"
 
 [[buybox.fields]]
 name = "monthly_rent"
 filter = "none"
-calc = "feed-required"
+calc = "feed-optional"
 
 [[buybox.fields]]
 name = "arv"

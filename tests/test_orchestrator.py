@@ -49,8 +49,8 @@ class _FakeGmail:
             raise _Crash("power lost before label")
         self.labels[msg_id] = label
 
-    def send_message(self, to, subject, body, sender):
-        self.sent.append((to, subject, body, sender))
+    def send_message(self, to, subject, body, sender, label=None):
+        self.sent.append((to, subject, body, sender, label))
 
 
 class _FakeSheets:
@@ -304,13 +304,14 @@ def test_dry_run_previews_feed_without_writing():
 
 NOTIFY_TO = "operator@example.com"
 NOTIFY_FROM = "deals@cgm-ventures.com"
+NOTIFY_LABEL = "Deal Notifications"
 
 
 def _notifying_orch(gmail, sheets, ladder, calculator=None):
     return Orchestrator(
         gmail, sheets, ladder, BUYBOX,
         calculator=calculator, assumptions=ASSUMPTIONS,
-        notify_to=NOTIFY_TO, notify_from=NOTIFY_FROM,
+        notify_to=NOTIFY_TO, notify_from=NOTIFY_FROM, notify_label=NOTIFY_LABEL,
         calc_link="https://sheet/edit",
     )
 
@@ -331,9 +332,10 @@ def test_passed_property_sends_one_notification_from_deals_mailbox():
     assert result.notified == 1
     deals = _deal_notifications(gmail)
     assert len(deals) == 1
-    to, subject, body, sender = deals[0]
+    to, subject, body, sender, label = deals[0]
     assert to == NOTIFY_TO
     assert sender == NOTIFY_FROM          # sent from the deals mailbox
+    assert label == NOTIFY_LABEL          # labeled directly, not via a filter
     assert "acme.com" in body             # Source
     assert "250,000" in body              # price
     assert "2,000" in body                # rent

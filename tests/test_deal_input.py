@@ -64,6 +64,14 @@ def test_present_arv_is_carried_through():
     assert build_deal_input(_full_fields(), ASSUMPTIONS)["arv"] == 320000
 
 
+def test_missing_rent_is_written_as_zero_sentinel_never_null():
+    # Rent is feed-optional now: a calc-ready deal can lack it. monthlyRent is a
+    # marker key, so it must carry a value (0), never null.
+    deal = build_deal_input({"purchase_price": 250000}, ASSUMPTIONS)
+    assert deal["monthlyRent"] == 0
+    assert deal["monthlyRent"] is not None
+
+
 # ---- assumption markers carry real values (never 0) -----------------------
 
 

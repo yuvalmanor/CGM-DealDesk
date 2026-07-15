@@ -46,7 +46,6 @@ def test_config_loads_buybox_from_default_file():
         "property_type",
         "purchase_price",
         "year_built",
-        "monthly_rent",
     )
     assert {f.name for f in cfg.buybox.gate_fields()} == {
         "property_type",
@@ -58,6 +57,6 @@ def test_config_loads_buybox_from_default_file():
     year = next(f for f in cfg.buybox.fields if f.name == "year_built")
     assert (ptype.op, ptype.threshold) == ("in", ["single_family"])
     assert (price.op, price.threshold) == ("<=", 350000)
-    assert (year.op, year.threshold) == (">=", 1995)
-    assert cfg.buybox.feed_required_names() == ("purchase_price", "monthly_rent")
-    assert cfg.buybox.feed_optional_names() == ("arv",)
+    assert (year.op, year.threshold) == (">=", 1950)
+    assert cfg.buybox.feed_required_names() == ("purchase_price",)
+    assert cfg.buybox.feed_optional_names() == ("monthly_rent", "arv")

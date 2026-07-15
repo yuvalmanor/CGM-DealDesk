@@ -95,21 +95,31 @@ class GmailGateway:
             userId=_USER_ID, id=msg_id, body={"addLabelIds": [label_id]}
         ).execute()
 
-    def send_message(self, to: str, subject: str, body_text: str, sender: str) -> None:
+    def send_message(
+        self, to: str, subject: str, body_text: str, sender: str, label: str | None = None
+    ) -> None:
         """Send a plain-text email. ``sender`` is set explicitly as the From so a
-        Deal Notification / Digest carries the ``deals@cgm-ventures.com`` address
-        the operator's existing Gmail filter routes on. The service account is
-        impersonating that mailbox (domain-wide delegation), so it is authorized
-        to send as it. Covered by the ``gmail.modify`` scope the pipeline uses."""
+        Deal Notification / Digest carries the ``deals@cgm-ventures.com`` address.
+        The service account impersonates that mailbox (domain-wide delegation), so
+        it is authorized to send as it. Covered by the ``gmail.modify`` scope.
+
+        When ``label`` is given, apply it to the sent message directly (rather
+        than relying on a Gmail filter to route it) — for send-to-self, the
+        delivered copy carries the label. Creates the label if it doesn't exist."""
         message = EmailMessage()
         message["To"] = to
         message["From"] = sender
         message["Subject"] = subject
         message.set_content(body_text)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
-        self._service.users().messages().send(
+        sent = self._service.users().messages().send(
             userId=_USER_ID, body={"raw": raw}
         ).execute()
+        if label:
+            label_id = self._resolve_label_id(label)
+            self._service.users().messages().modify(
+                userId=_USER_ID, id=sent["id"], body={"addLabelIds": [label_id]}
+            ).execute()
 
     def _walk_payload(self, msg_id, payload, body_parts, attachments) -> None:
         mime = payload.get("mimeType", "")
