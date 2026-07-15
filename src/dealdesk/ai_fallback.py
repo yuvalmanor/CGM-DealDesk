@@ -77,7 +77,11 @@ class AnthropicFallback:
                         "Extract every distinct property offered in the text below "
                         "into the `properties` array. One object per property. Omit "
                         "any field you cannot find rather than guessing. For "
-                        "`property_type`, classify into one of the schema's allowed "
+                        "`address`, return the complete single-line mailing address "
+                        "including city, state, and ZIP when present, e.g. "
+                        "`373 Bellvue Dr, Fort Worth, TX 76134` — not just the street "
+                        "line. Also fill `city` with just the city name (for filtering). "
+                        "For `property_type`, classify into one of the schema's allowed "
                         "values (a house is `single_family`; a vacant/build-ready/"
                         "commercial lot is `vacant_lot`, `land`, or `commercial`); "
                         "omit it if genuinely unclear.\n\n"
@@ -96,8 +100,14 @@ class AnthropicFallback:
 _PROPERTY_SCHEMA = {
     "type": "object",
     "properties": {
-        "address": {"type": "string"},
-        "city": {"type": "string"},
+        "address": {
+            "type": "string",
+            "description": (
+                "Complete single-line mailing address including city, state, and ZIP "
+                "when present, e.g. '373 Bellvue Dr, Fort Worth, TX 76134'."
+            ),
+        },
+        "city": {"type": "string", "description": "City name only, for filtering."},
         "property_type": {"type": "string", "enum": list(_PROPERTY_TYPES)},
         "purchase_price": {"type": "number"},
         "monthly_rent": {"type": "number"},
