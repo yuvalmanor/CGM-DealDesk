@@ -16,7 +16,9 @@ from googleapiclient.discovery import build
 from .config import Config
 
 # Discovery (Phase 1) needs read only. The pipeline (Phase 2) needs modify to
-# apply Bucket labels, plus Sheets to write the Triage Log.
+# apply Bucket labels, plus Sheets to write the Triage Log. The modify scope also
+# authorizes ``messages.send`` (Phase 4 Deal Notifications / Daily Digest), so no
+# extra scope is added.
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"

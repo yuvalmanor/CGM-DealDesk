@@ -109,6 +109,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"Cutoff: {cutoff:%Y-%m-%d}  ({mode})")
     print()
 
+    if not args.dry_run and not config.notify_to:
+        print(
+            "warning: notify.to is not set; no Deal Notifications or Daily Digest will be sent.",
+            file=sys.stderr,
+        )
+
     orchestrator = Orchestrator(
         gmail,
         sheets,
@@ -117,6 +123,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         calculator=calculator,
         assumptions=config.assumptions,
+        notify_to=config.notify_to,
+        notify_from=config.notify_from,
+        calc_link=config.calc_link,
     )
     results = orchestrator.run(cutoff, config.bucket_labels, limit=args.limit)
 
@@ -137,6 +146,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     deals_fed = sum(r.deals_fed for r in results)
     fed_verb = "would feed" if args.dry_run else "fed"
     print(f"Calculator: {fed_verb} {deals_fed} calc-ready deal(s) to {config.calc_tab}")
+
+    notified = sum(r.notified for r in results)
+    if args.dry_run:
+        print(f"Notifications: would send {notified} Deal Notification(s) + 1 Daily Digest")
+    elif config.notify_to:
+        print(f"Notifications: sent {notified} Deal Notification(s) + 1 Daily Digest to {config.notify_to}")
+    else:
+        print("Notifications: skipped (notify.to not set)")
     return 0
 
 

@@ -78,6 +78,7 @@ def build_triage_row(
     fields: dict,
     evaluation: Evaluation,
     deals_app_row_id: str = "",
+    notified: bool = False,
 ) -> TriageRow:
     return TriageRow(
         message_id=email.id,
@@ -91,4 +92,5 @@ def build_triage_row(
         calc_ready=evaluation.calc_ready,
         missing_fields="; ".join(evaluation.missing_fields),
         deals_app_row_id=deals_app_row_id,
+        notified=notified,
     )

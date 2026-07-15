@@ -13,6 +13,7 @@ from .triage_log import HEADER, TriageRow
 _KEY_RANGE_COLS = "A:B"  # message_id, property_index
 _NUM_COLS = len(HEADER)
 _LAST_COL = chr(ord("A") + _NUM_COLS - 1)  # inclusive last column letter
+_NOTIFIED_COL_INDEX = HEADER.index("notified")  # 0-based column of the notified flag
 
 
 class SheetsGateway:
@@ -38,6 +39,29 @@ class SheetsGateway:
                 key_to_rownum[row.key] = self._next_rownum(key_to_rownum)
             else:
                 self._update(values, rownum, row)
+
+    def fetch_notified(self, message_id: str) -> set[int]:
+        """Return the property indices of ``message_id`` already marked
+        ``notified`` in the sheet. The orchestrator reads this before sending so a
+        retry never re-emails a Property (the ``notified`` guard). Reads the full
+        row range once and filters to the Email in memory."""
+        resp = self._service.spreadsheets().values().get(
+            spreadsheetId=self._spreadsheet_id,
+            range=f"{self._tab}!A:{_LAST_COL}",
+        ).execute()
+        grid = resp.get("values", [])
+        notified: set[int] = set()
+        for cells in grid:
+            if not cells or cells[0] != message_id:
+                continue
+            if len(cells) <= _NOTIFIED_COL_INDEX:
+                continue
+            if str(cells[_NOTIFIED_COL_INDEX]).strip().upper() == "TRUE":
+                try:
+                    notified.add(int(cells[1]))
+                except (ValueError, IndexError):
+                    continue
+        return notified
 
     def _read_key_index(self, values) -> dict[tuple[str, str], int]:
         resp = values.get(

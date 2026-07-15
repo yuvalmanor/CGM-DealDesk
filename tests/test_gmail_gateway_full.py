@@ -22,6 +22,7 @@ class _FakeMessages:
         self._message = message
         self._attachment_data = attachment_data
         self.modify_calls = []
+        self.send_calls = []
 
     def get(self, userId, id, format):
         return _Exec(self._message)
@@ -38,6 +39,10 @@ class _FakeMessages:
     def modify(self, userId, id, body):
         self.modify_calls.append((id, body))
         return _Exec({})
+
+    def send(self, userId, body):
+        self.send_calls.append((userId, body))
+        return _Exec({"id": "sent-1"})
 
 
 class _FakeLabels:
@@ -134,3 +139,22 @@ def test_apply_label_caches_resolved_id():
     # Existing label — never created; both modifies used the resolved id.
     assert labels.create_calls == []
     assert messages.modify_calls == [("m1", {"addLabelIds": ["L1"]}), ("m2", {"addLabelIds": ["L1"]})]
+
+
+def test_send_message_encodes_from_subject_and_body():
+    messages = _FakeMessages(_message_with_attachment(), "")
+    gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))
+
+    gateway.send_message(
+        "operator@example.com", "Deal: 123 Main St", "Price: $250,000",
+        sender="deals@cgm-ventures.com",
+    )
+
+    assert len(messages.send_calls) == 1
+    user_id, body = messages.send_calls[0]
+    assert user_id == "me"
+    raw = base64.urlsafe_b64decode(body["raw"].encode()).decode()
+    assert "From: deals@cgm-ventures.com" in raw   # sent from the deals mailbox
+    assert "To: operator@example.com" in raw
+    assert "Subject: Deal: 123 Main St" in raw
+    assert "Price: $250,000" in raw

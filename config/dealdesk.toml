@@ -52,6 +52,14 @@ tab = "DEALS_APP"
 hml_lev_pp = 69.565
 refi_ltv = 65
 
+[notify]
+# Where Deal Notifications and the Daily Digest are delivered. `from` must be the
+# deals mailbox so the operator's existing "Deal Notifications" Gmail filter routes
+# them (defaults to [inbox].address). Set `to` before the first live run, or
+# notifications are skipped with a warning.
+to = "yumanor@sensos.io"
+from = "deals@cgm-ventures.com"
+
 [ai]
 # Last-resort extraction fallback (Anthropic), used only when the deterministic
 # rungs can't recover the must-have fields. `model` is operator-tunable: the

@@ -38,6 +38,16 @@ class Config:
     assumptions: Assumptions = field(default_factory=lambda: Assumptions(0.0, 0.0))
     ai_model: str = "claude-opus-4-8"
     ai_api_key_env: str = "ANTHROPIC_API_KEY"
+    notify_to: str = ""
+    notify_from: str = ""
+
+    @property
+    def calc_link(self) -> str:
+        """Deep-ish link to the Calculator's sheet used in Deal Notifications.
+        Empty when no Calculator spreadsheet is configured."""
+        if not self.calc_spreadsheet_id:
+            return ""
+        return f"https://docs.google.com/spreadsheets/d/{self.calc_spreadsheet_id}/edit"
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
@@ -55,6 +65,7 @@ class Config:
         triage = raw.get("triage", {})
         calculator = raw.get("calculator", {})
         ai = raw.get("ai", {})
+        notify = raw.get("notify", {})
 
         cutoff_raw = activation.get("cutoff")
         # tomllib parses a bare TOML date into a datetime.date already; accept a
@@ -86,4 +97,8 @@ class Config:
             ),
             ai_model=ai.get("model", "claude-opus-4-8"),
             ai_api_key_env=ai.get("api_key_env", "ANTHROPIC_API_KEY"),
+            notify_to=notify.get("to", ""),
+            # Deal Notifications must come *from* the deals mailbox so the
+            # operator's existing filter routes them; default to the inbox.
+            notify_from=notify.get("from", inbox["address"]),
         )

@@ -96,11 +96,11 @@ The Notification Builder plus the Gmail Gateway **send** path (from `deals@cgm-v
 
 ### Acceptance criteria
 
-- [ ] Exactly one Deal Notification per `Passed-BuyBox` Property; a re-run does not re-send (`notified` guard verified).
-- [ ] The notification carries address, Source, price/rent/ARV, Verdict + reasons, Calculator-row link, and re-send flag when present; it is sent from `deals@cgm-ventures.com`.
-- [ ] Exactly one Daily Digest per run, with per-Bucket counts and one-line listings including `Rejected`/`Error`.
-- [ ] `Needs-Human` Properties appear in the Digest with what's missing (no per-deal email for them).
-- [ ] Notification Builder golden tests cover per-deal and digest content, including the Needs-Human summary.
+- [x] Exactly one Deal Notification per `Passed-BuyBox` Property; a re-run does not re-send (`notified` guard verified). _(Orchestrator reads `SheetsGateway.fetch_notified` and stamps the Triage row's `notified` flag; `test_orchestrator::test_passed_property_sends_one_notification_from_deals_mailbox` + `test_rerun_does_not_resend_notification`.)_
+- [x] The notification carries address, Source, price/rent/ARV, Verdict + reasons, Calculator-row link, and re-send flag when present; it is sent from `deals@cgm-ventures.com`. _(`build_deal_notification`; `test_notifications` field/resend goldens; `test_gmail_gateway_full::test_send_message_encodes_from_subject_and_body` asserts the `From: deals@…` header.)_
+- [x] Exactly one Daily Digest per run, with per-Bucket counts and one-line listings including `Rejected`/`Error`. _(`build_digest` + `Orchestrator._send_digest` (once in `run`); `test_run_sends_one_digest_covering_all_buckets`, `test_digest_counts_and_lists_all_buckets`.)_
+- [x] `Needs-Human` Properties appear in the Digest with what's missing (no per-deal email for them). _(`test_digest_needs_human_shows_what_is_missing`; `test_needs_human_gets_no_per_deal_notification`.)_
+- [x] Notification Builder golden tests cover per-deal and digest content, including the Needs-Human summary. _(`tests/test_notifications.py`.)_
 
 ---
 

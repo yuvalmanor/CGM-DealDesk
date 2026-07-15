@@ -34,6 +34,7 @@ class _FakeGmail:
         self._emails = {e.id: e for e in emails}
         self._metas = list(emails)
         self.labels = {}
+        self.sent = []  # (to, subject, body, sender) — Deal Notifications + Digest
         self._crash_pending = crash_on_label_once
 
     def fetch_work_queue(self, cutoff, bucket_labels, limit=None):
@@ -48,9 +49,13 @@ class _FakeGmail:
             raise _Crash("power lost before label")
         self.labels[msg_id] = label
 
+    def send_message(self, to, subject, body, sender):
+        self.sent.append((to, subject, body, sender))
+
 
 class _FakeSheets:
-    """Idempotent upsert keyed on row.key — the real gateway's contract."""
+    """Idempotent upsert keyed on row.key — the real gateway's contract. Also
+    serves the `notified` guard read (`fetch_notified`) off the stored rows."""
 
     def __init__(self):
         self.rows = {}
@@ -60,6 +65,13 @@ class _FakeSheets:
         self.upsert_calls += 1
         for r in rows:
             self.rows[r.key] = r
+
+    def fetch_notified(self, message_id):
+        return {
+            r.property_index
+            for r in self.rows.values()
+            if r.message_id == message_id and r.notified
+        }
 
 
 class _FakeCalculator:
@@ -288,6 +300,130 @@ def test_dry_run_previews_feed_without_writing():
     assert result.deals_fed == 1   # previewed
     assert calc.deals == {}        # but nothing written
     assert "e1" not in gmail.labels
+
+
+NOTIFY_TO = "operator@example.com"
+NOTIFY_FROM = "deals@cgm-ventures.com"
+
+
+def _notifying_orch(gmail, sheets, ladder, calculator=None):
+    return Orchestrator(
+        gmail, sheets, ladder, BUYBOX,
+        calculator=calculator, assumptions=ASSUMPTIONS,
+        notify_to=NOTIFY_TO, notify_from=NOTIFY_FROM,
+        calc_link="https://sheet/edit",
+    )
+
+
+def _deal_notifications(gmail):
+    # The Daily Digest subject starts with "DealDesk daily digest"; everything
+    # else is a per-deal notification.
+    return [s for s in gmail.sent if not s[1].startswith("DealDesk daily digest")]
+
+
+def test_passed_property_sends_one_notification_from_deals_mailbox():
+    gmail = _FakeGmail([_email("e1", from_addr="blast@acme.com")])
+    sheets = _FakeSheets()
+    orch = _notifying_orch(gmail, sheets, _FakeLadder({"e1": [_pass_fields()]}), _FakeCalculator())
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.notified == 1
+    deals = _deal_notifications(gmail)
+    assert len(deals) == 1
+    to, subject, body, sender = deals[0]
+    assert to == NOTIFY_TO
+    assert sender == NOTIFY_FROM          # sent from the deals mailbox
+    assert "acme.com" in body             # Source
+    assert "250,000" in body              # price
+    assert "2,000" in body                # rent
+    assert "Pass" in body                 # Verdict
+    assert "https://sheet/edit" in body   # Calculator link
+    # The Triage row is stamped notified so a retry won't re-send.
+    assert sheets.rows[("e1", "0")].notified is True
+
+
+def test_rerun_does_not_resend_notification():
+    gmail = _FakeGmail([_email("e1")])
+    sheets = _FakeSheets()
+    orch = _notifying_orch(gmail, sheets, _FakeLadder({"e1": [_pass_fields()]}), _FakeCalculator())
+
+    orch.process_email(gmail.fetch_email("e1"))
+    orch.process_email(gmail.fetch_email("e1"))  # next daily run
+
+    assert len(_deal_notifications(gmail)) == 1  # notified guard held
+
+
+def test_needs_human_gets_no_per_deal_notification():
+    gmail = _FakeGmail([_email("e1")])
+    orch = _notifying_orch(
+        gmail, _FakeSheets(), _FakeLadder({"e1": [_needs_human_calc_ready_fields()]}), _FakeCalculator()
+    )
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.bucket is Bucket.NEEDS_HUMAN
+    assert result.notified == 0
+    assert _deal_notifications(gmail) == []
+
+
+def test_reject_gets_no_notification():
+    gmail = _FakeGmail([_email("e1")])
+    orch = _notifying_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [_reject_fields()]}))
+
+    orch.process_email(gmail.fetch_email("e1"))
+
+    assert _deal_notifications(gmail) == []
+
+
+def test_run_sends_one_digest_covering_all_buckets():
+    emails = [_email("e1"), _email("e2"), _email("e3")]
+    gmail = _FakeGmail(emails)
+    ladder = _FakeLadder({
+        "e1": [_pass_fields()],
+        "e2": [_needs_human_calc_ready_fields()],
+        "e3": [_reject_fields()],
+    })
+    orch = _notifying_orch(gmail, _FakeSheets(), ladder, _FakeCalculator())
+
+    orch.run(cutoff=None, bucket_labels=())
+
+    digests = [s for s in gmail.sent if s[1].startswith("DealDesk daily digest")]
+    assert len(digests) == 1  # exactly one per run
+    body = digests[0][2]
+    assert "Passed-BuyBox  1" in body
+    assert "Needs-Human    1" in body
+    assert "Rejected       1" in body
+
+
+def test_dry_run_previews_notifications_without_sending():
+    gmail = _FakeGmail([_email("e1")])
+    orch = Orchestrator(
+        gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX,
+        dry_run=True, calculator=_FakeCalculator(), assumptions=ASSUMPTIONS,
+        notify_to=NOTIFY_TO, notify_from=NOTIFY_FROM, calc_link="https://sheet/edit",
+    )
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.notified == 1  # previewed
+    assert gmail.sent == []       # but nothing sent
+
+
+def test_no_recipient_configured_sends_nothing_and_does_not_mark_notified():
+    gmail = _FakeGmail([_email("e1")])
+    sheets = _FakeSheets()
+    # No notify_to -> a live run must not mark the row notified (silent-drop guard).
+    orch = Orchestrator(
+        gmail, sheets, _FakeLadder({"e1": [_pass_fields()]}), BUYBOX,
+        calculator=_FakeCalculator(), assumptions=ASSUMPTIONS,
+    )
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.notified == 0
+    assert gmail.sent == []
+    assert sheets.rows[("e1", "0")].notified is False
 
 
 def test_crash_before_label_reruns_without_duplicating_row():

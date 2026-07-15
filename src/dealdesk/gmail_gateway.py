@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 from datetime import date
+from email.message import EmailMessage
 
 from .models import Attachment, Email, MessageMeta
 from .query import build_work_queue_query
@@ -92,6 +93,22 @@ class GmailGateway:
         label_id = self._resolve_label_id(label_name)
         self._service.users().messages().modify(
             userId=_USER_ID, id=msg_id, body={"addLabelIds": [label_id]}
+        ).execute()
+
+    def send_message(self, to: str, subject: str, body_text: str, sender: str) -> None:
+        """Send a plain-text email. ``sender`` is set explicitly as the From so a
+        Deal Notification / Digest carries the ``deals@cgm-ventures.com`` address
+        the operator's existing Gmail filter routes on. The service account is
+        impersonating that mailbox (domain-wide delegation), so it is authorized
+        to send as it. Covered by the ``gmail.modify`` scope the pipeline uses."""
+        message = EmailMessage()
+        message["To"] = to
+        message["From"] = sender
+        message["Subject"] = subject
+        message.set_content(body_text)
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+        self._service.users().messages().send(
+            userId=_USER_ID, body={"raw": raw}
         ).execute()
 
     def _walk_payload(self, msg_id, payload, body_parts, attachments) -> None:

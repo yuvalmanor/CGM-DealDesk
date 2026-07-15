@@ -18,9 +18,12 @@ class _FakeValues:
         self._store = store
 
     def get(self, spreadsheetId, range):
-        # Return only the A:B key columns, mirroring the real request.
-        rows = [[r[0] if len(r) > 0 else "", r[1] if len(r) > 1 else ""] for r in self._store["rows"]]
-        return _Exec({"values": rows})
+        # The key-index read requests A:B; fetch_notified requests the full row
+        # range. Mirror that: return two columns for A:B, full rows otherwise.
+        if range.rstrip().endswith("B"):
+            rows = [[r[0] if len(r) > 0 else "", r[1] if len(r) > 1 else ""] for r in self._store["rows"]]
+            return _Exec({"values": rows})
+        return _Exec({"values": [list(r) for r in self._store["rows"]]})
 
     def update(self, spreadsheetId, range, valueInputOption, body):
         rownum = _row_of(range)
@@ -114,3 +117,25 @@ def test_distinct_keys_each_append():
     gw.upsert_rows([_row("m1", 0), _row("m1", 1), _row("m2", 0)])
 
     assert len(_data_rows(service)) == 3
+
+
+def _notified_row(msg_id, index, notified):
+    return TriageRow(
+        message_id=msg_id, property_index=index, received_date="d", source="acme.com",
+        address="9 Oak Dr", facts_json="{}", verdict="Pass", reasons="", calc_ready=True,
+        missing_fields="", notified=notified,
+    )
+
+
+def test_fetch_notified_returns_only_notified_indices_for_the_email():
+    service = _FakeSheetsService()
+    gw = SheetsGateway(service, "sid", "DEALS_TRIAGE")
+    gw.upsert_rows([
+        _notified_row("m1", 0, notified=True),
+        _notified_row("m1", 1, notified=False),
+        _notified_row("m2", 0, notified=True),  # different email
+    ])
+
+    assert gw.fetch_notified("m1") == {0}
+    assert gw.fetch_notified("m2") == {0}
+    assert gw.fetch_notified("absent") == set()
