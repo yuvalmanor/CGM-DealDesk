@@ -27,3 +27,12 @@ def test_changing_cutoff_changes_query():
 def test_label_with_whitespace_is_quoted():
     q = build_work_queue_query(date(2026, 6, 28), ("Deal Notifications",))
     assert '-label:"Deal Notifications"' in q
+
+
+def test_retryable_label_is_not_negated():
+    # A retryable Bucket (Error) stays in the queue so a failed Email retries;
+    # every terminal Bucket is still excluded.
+    q = build_work_queue_query(date(2026, 6, 28), LABELS, retryable_labels=("Error",))
+    assert "-label:Error" not in q
+    for label in ("Passed-BuyBox", "Needs-Human", "Rejected", "Not-A-Deal"):
+        assert f"-label:{label}" in q

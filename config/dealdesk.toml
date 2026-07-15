@@ -16,9 +16,17 @@ cutoff = "2026-06-28"
 lookback_days = 14
 
 [buckets]
-# The Bucket labels that mark an Email as already processed. The work-queue
-# query excludes any Email carrying one of these, so nothing is re-examined.
+# The Bucket labels that mark an Email as already processed. The work-queue query
+# excludes any Email carrying a *terminal* one of these. `Error` is retryable — it
+# is NOT excluded, so a failed Email is folded back in and retried every run.
 labels = ["Passed-BuyBox", "Needs-Human", "Rejected", "Not-A-Deal", "Error"]
+
+[retry]
+# An `Error` Email is retried on every daily run. If it is still failing once it
+# is older than `escalate_after_days`, it is relabeled `Needs-Human` so a broken
+# item reaches the operator instead of retrying forever. Email age stands in for a
+# retry counter — there is no separate ledger.
+escalate_after_days = 3
 
 [auth]
 # Name of the environment variable holding the shared Calculator service-account

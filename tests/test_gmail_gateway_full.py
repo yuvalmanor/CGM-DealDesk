@@ -141,6 +141,35 @@ def test_apply_label_caches_resolved_id():
     assert messages.modify_calls == [("m1", {"addLabelIds": ["L1"]}), ("m2", {"addLabelIds": ["L1"]})]
 
 
+def test_apply_label_strips_stale_error_label():
+    # A retry that reaches a terminal Bucket removes the stale Error label in the
+    # same modify call, so the Email ends carrying exactly one Bucket.
+    messages = _FakeMessages(_message_with_attachment(), "")
+    labels = _FakeLabels(
+        [{"id": "L_ERR", "name": "Error"}, {"id": "L_PB", "name": "Passed-BuyBox"}]
+    )
+    gateway = GmailGateway(_FakeService(messages, labels))
+
+    gateway.apply_label("m1", "Passed-BuyBox", remove_labels=("Error",))
+
+    assert labels.create_calls == []  # nothing created
+    assert messages.modify_calls == [
+        ("m1", {"addLabelIds": ["L_PB"], "removeLabelIds": ["L_ERR"]})
+    ]
+
+
+def test_apply_label_does_not_create_an_absent_remove_label():
+    # If the Error label doesn't exist, it must not be conjured just to remove it.
+    messages = _FakeMessages(_message_with_attachment(), "")
+    labels = _FakeLabels([{"id": "L_PB", "name": "Passed-BuyBox"}])
+    gateway = GmailGateway(_FakeService(messages, labels))
+
+    gateway.apply_label("m1", "Passed-BuyBox", remove_labels=("Error",))
+
+    assert labels.create_calls == []  # Error was never created
+    assert messages.modify_calls == [("m1", {"addLabelIds": ["L_PB"]})]  # no removeLabelIds
+
+
 def test_send_message_encodes_from_subject_and_body():
     messages = _FakeMessages(_message_with_attachment(), "")
     gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))

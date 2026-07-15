@@ -57,3 +57,9 @@ class Bucket(str, Enum):
     REJECTED = "Rejected"
     NOT_A_DEAL = "Not-A-Deal"
     ERROR = "Error"
+
+
+# Error is the only retryable Bucket: unlike a terminal Bucket, an ``Error`` Email
+# is *not* excluded from the work queue — it is folded back in every run so a
+# transient failure retries (Phase 5). Age (not a ledger) governs when it escalates.
+RETRYABLE_BUCKET_VALUES: tuple[str, ...] = (Bucket.ERROR.value,)

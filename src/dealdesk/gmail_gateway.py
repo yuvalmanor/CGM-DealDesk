@@ -33,13 +33,15 @@ class GmailGateway:
         cutoff: date,
         bucket_labels: tuple[str, ...] | list[str],
         limit: int | None = None,
+        retryable_labels: tuple[str, ...] | list[str] = (),
     ) -> list[MessageMeta]:
         """Return header-only metadata for every unprocessed Inbox Email on/after
         the cutoff. Paginates the list; fetches metadata format only (no body,
         no attachment download). ``limit`` caps the number of Emails returned —
         pagination and metadata fetches stop early, so it genuinely bounds reads
-        (and, downstream, AI cost)."""
-        query = build_work_queue_query(cutoff, bucket_labels)
+        (and, downstream, AI cost). ``retryable_labels`` (``Error``) are left in
+        the queue so a failed Email is retried."""
+        query = build_work_queue_query(cutoff, bucket_labels, retryable_labels)
         messages = self._service.users().messages()
 
         ids: list[str] = []
@@ -87,12 +89,27 @@ class GmailGateway:
             attachments=tuple(attachments),
         )
 
-    def apply_label(self, msg_id: str, label_name: str) -> None:
+    def apply_label(
+        self, msg_id: str, label_name: str, remove_labels: tuple[str, ...] | list[str] = ()
+    ) -> None:
         """Apply a Bucket label to an Email — the label-last write that marks it
-        processed. Creates the label if it doesn't exist yet."""
+        processed. Creates the label if it doesn't exist yet.
+
+        ``remove_labels`` names labels to strip in the same modify call — used when
+        a previously-``Error`` Email now reaches a terminal Bucket (retry succeeded)
+        or escalates to ``Needs-Human``, so it ends carrying exactly one Bucket. A
+        label that doesn't exist is skipped (never created just to remove it)."""
         label_id = self._resolve_label_id(label_name)
+        body: dict[str, list[str]] = {"addLabelIds": [label_id]}
+        remove_ids = [
+            rid
+            for name in remove_labels
+            if (rid := self._existing_label_id(name)) and rid != label_id
+        ]
+        if remove_ids:
+            body["removeLabelIds"] = remove_ids
         self._service.users().messages().modify(
-            userId=_USER_ID, id=msg_id, body={"addLabelIds": [label_id]}
+            userId=_USER_ID, id=msg_id, body=body
         ).execute()
 
     def send_message(
@@ -139,18 +156,24 @@ class GmailGateway:
             self._walk_payload(msg_id, part, body_parts, attachments)
 
     def _resolve_label_id(self, label_name: str) -> str:
+        existing = self._existing_label_id(label_name)
+        if existing is not None:
+            return existing
+        created = self._service.users().labels().create(
+            userId=_USER_ID, body={"name": label_name}
+        ).execute()
+        self._label_ids[label_name] = created["id"]
+        return created["id"]
+
+    def _existing_label_id(self, label_name: str) -> str | None:
+        """Resolve a label id *without* creating it — used for removals, so a
+        stale label that isn't present is simply skipped rather than conjured."""
         if label_name in self._label_ids:
             return self._label_ids[label_name]
-        labels_api = self._service.users().labels()
-        listing = labels_api.list(userId=_USER_ID).execute()
+        listing = self._service.users().labels().list(userId=_USER_ID).execute()
         for lbl in listing.get("labels", []):
             self._label_ids[lbl["name"]] = lbl["id"]
-        if label_name not in self._label_ids:
-            created = labels_api.create(
-                userId=_USER_ID, body={"name": label_name}
-            ).execute()
-            self._label_ids[label_name] = created["id"]
-        return self._label_ids[label_name]
+        return self._label_ids.get(label_name)
 
 
 def _header_map(payload: dict) -> dict:

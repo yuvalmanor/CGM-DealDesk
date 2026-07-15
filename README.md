@@ -8,22 +8,24 @@ Inbox. See [CONTEXT.md](CONTEXT.md), [ADR-0001](docs/adr/0001-local-python-pipel
 
 ## Status
 
-**Phase 3 — Calculator feed.** Qualifying deals are now written downstream into
-the Calculator's `DEALS_APP` tab (ADR-0002). The **Deal Input Builder** maps a
-Property's extracted fields to a *partial* `Deal` — all five marker keys always
-present, ARV written as `0` when unknown, and the `hmlLevPP`/`refiLtv` assumption
-markers carrying real config values (never `0`). A Property is fed **iff it is
-Calc-ready and its Verdict is Pass or Needs-Human** — a Reject is never fed. The
-`DEALS_APP` row id is derived deterministically from the Triage key
-`(message-id, property index)`, stored on the Triage Log row as the triage→
-Calculator link, and re-used on re-run so the feed is idempotent (no duplicate
-deal on a crash/retry). The Calculator backfills its own standing assumptions
-from `DEFAULT_DEAL` and computes results live on open.
+**Phase 5 — Error retry + age-based escalation.** `Error` is now a genuinely
+*retryable* Bucket: the work-queue query no longer negates it, so a mid-run
+failure is folded back in and retried on the next daily run. When a retry
+succeeds (or an Email escalates), the stale `Error` label is stripped in the same
+modify call so every Email still ends carrying **exactly one Bucket**. An `Error`
+Email that keeps failing until it is older than `retry.escalate_after_days`
+(default **3**) is relabeled `Needs-Human`, so a genuinely broken item reaches the
+operator instead of retrying forever — **Email age stands in for a retry counter;
+there is no ledger** (an unparseable `Date` header simply can't be aged and stays
+`Error`).
 
 Earlier phases are unchanged: the read half (Phase 1 — auth, work-queue query,
-read-only `discover`) and the triage spine (Phase 2 — extract → evaluate → roll
-up → Triage Log → Bucket label **last**, with a handled mid-run failure landing
-in `Error`). Notifications are still Phase 4.
+read-only `discover`); the triage spine (Phase 2 — extract → evaluate → roll up →
+Triage Log → Bucket label **last**); the Calculator feed (Phase 3 — a *partial*
+`Deal` into `DEALS_APP`, all five marker keys present, ARV `0` when unknown, real
+`hmlLevPP`/`refiLtv`, idempotent by a deterministic row id); and notifications
+(Phase 4 — one Deal Notification per `Passed-BuyBox` Property behind a `notified`
+guard, plus one Daily Digest per run).
 
 ## Setup
 

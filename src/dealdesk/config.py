@@ -41,6 +41,7 @@ class Config:
     notify_to: str = ""
     notify_from: str = ""
     notify_label: str = ""
+    escalate_after_days: int = 3
 
     @property
     def calc_link(self) -> str:
@@ -67,6 +68,7 @@ class Config:
         calculator = raw.get("calculator", {})
         ai = raw.get("ai", {})
         notify = raw.get("notify", {})
+        retry = raw.get("retry", {})
 
         cutoff_raw = activation.get("cutoff")
         # tomllib parses a bare TOML date into a datetime.date already; accept a
@@ -103,4 +105,7 @@ class Config:
             # operator's existing filter routes them; default to the inbox.
             notify_from=notify.get("from", inbox["address"]),
             notify_label=notify.get("label", ""),
+            # Age (days) past which a still-failing Error Email escalates to
+            # Needs-Human — age stands in for a retry counter (Phase 5).
+            escalate_after_days=int(retry.get("escalate_after_days", 3)),
         )

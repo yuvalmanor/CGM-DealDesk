@@ -39,3 +39,9 @@ def test_from_dict_cutoff_optional():
 def test_delegated_subject_defaults_to_inbox():
     cfg = Config.from_dict({"inbox": {"address": "x@y.com"}})
     assert cfg.delegated_subject == "x@y.com"
+
+
+def test_escalate_after_days_defaults_and_overrides():
+    assert Config.load().escalate_after_days == 3  # shipped default
+    cfg = Config.from_dict({"inbox": {"address": "x@y.com"}, "retry": {"escalate_after_days": 7}})
+    assert cfg.escalate_after_days == 7

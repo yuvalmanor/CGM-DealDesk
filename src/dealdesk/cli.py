@@ -127,6 +127,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         notify_from=config.notify_from,
         notify_label=config.notify_label,
         calc_link=config.calc_link,
+        today=today,
+        escalate_after_days=config.escalate_after_days,
     )
     results = orchestrator.run(cutoff, config.bucket_labels, limit=args.limit)
 

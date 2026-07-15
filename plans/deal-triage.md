@@ -114,9 +114,9 @@ Fold `Error`-labeled Emails back into the work queue so they retry on every dail
 
 ### Acceptance criteria
 
-- [ ] `Error` Emails within the age window are picked up and retried on the next run; a transient failure that later succeeds ends in its correct terminal Bucket.
-- [ ] An `Error` Email older than ~3 days that still fails is escalated to `Needs-Human`.
-- [ ] Escalation uses Email age only; no retry-count ledger is introduced.
+- [x] `Error` Emails within the age window are picked up and retried on the next run; a transient failure that later succeeds ends in its correct terminal Bucket. _(Query no longer negates the retryable `Error` label — `build_work_queue_query(..., retryable_labels)` + `Orchestrator.run` derive it from `RETRYABLE_BUCKET_VALUES`; on success the terminal label strips the stale `Error` so the Email ends in exactly one Bucket. `test_query::test_retryable_label_is_not_negated`, `test_orchestrator::test_run_folds_error_back_into_work_queue` + `test_transient_failure_that_later_succeeds_ends_in_terminal_bucket`; verified live.)_
+- [x] An `Error` Email older than ~3 days that still fails is escalated to `Needs-Human`. _(`Orchestrator._error_bucket` → `Needs-Human` when `age >= escalate_after_days`, stripping the `Error` label; `test_old_error_email_escalates_to_needs_human` + boundary test; live drive: 5-day-old failure → `Needs-Human`, `Error` removed.)_
+- [x] Escalation uses Email age only; no retry-count ledger is introduced. _(Age derived from the `Date` header via `_email_age_days`; no counter/ledger anywhere — an unparseable date simply can't be aged and stays `Error`: `test_unparseable_date_cannot_be_aged_so_stays_error`.)_
 
 ---
 

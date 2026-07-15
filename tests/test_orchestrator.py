@@ -4,6 +4,8 @@ Uses in-memory fakes for the Gmail and Sheets gateways (the Sheets fake mirrors
 the real gateway's idempotency contract: upsert keyed on (message-id, index)).
 """
 
+from datetime import date
+
 import pytest
 
 from dealdesk.buybox import BuyBox, FieldSpec
@@ -34,20 +36,25 @@ class _FakeGmail:
         self._emails = {e.id: e for e in emails}
         self._metas = list(emails)
         self.labels = {}
+        self.removed = {}  # msg_id -> list of labels stripped in apply_label
         self.sent = []  # (to, subject, body, sender) — Deal Notifications + Digest
         self._crash_pending = crash_on_label_once
+        self.fetch_retryable = None  # retryable_labels seen by the last fetch
 
-    def fetch_work_queue(self, cutoff, bucket_labels, limit=None):
+    def fetch_work_queue(self, cutoff, bucket_labels, limit=None, retryable_labels=()):
+        self.fetch_retryable = tuple(retryable_labels)
         return self._metas[:limit] if limit else self._metas
 
     def fetch_email(self, msg_id):
         return self._emails[msg_id]
 
-    def apply_label(self, msg_id, label):
+    def apply_label(self, msg_id, label, remove_labels=()):
         if self._crash_pending:
             self._crash_pending = False
             raise _Crash("power lost before label")
         self.labels[msg_id] = label
+        if remove_labels:
+            self.removed[msg_id] = list(remove_labels)
 
     def send_message(self, to, subject, body, sender, label=None):
         self.sent.append((to, subject, body, sender, label))
@@ -99,8 +106,8 @@ class _FakeLadder:
         return ExtractionResult(result, used_ai=self._used_ai)
 
 
-def _email(msg_id, from_addr="x@acme.com", subject=""):
-    return Email(id=msg_id, from_addr=from_addr, subject=subject, date="d", body_text="body")
+def _email(msg_id, from_addr="x@acme.com", subject="", date_hdr="d"):
+    return Email(id=msg_id, from_addr=from_addr, subject=subject, date=date_hdr, body_text="body")
 
 
 def test_result_carries_subject_and_sender():
@@ -189,6 +196,105 @@ def test_handled_failure_lands_in_error():
 
     assert result.bucket is Bucket.ERROR
     assert gmail.labels["e1"] == "Error"
+
+
+# --- Phase 5: Error retry + age-based escalation ---------------------------
+
+TODAY = date(2026, 7, 15)
+
+
+def _erroring_orch(gmail, today=TODAY, escalate_after_days=3):
+    ladder = _FakeLadder({"e1": RuntimeError("extraction blew up")})
+    return Orchestrator(
+        gmail, _FakeSheets(), ladder, BUYBOX,
+        today=today, escalate_after_days=escalate_after_days,
+    )
+
+
+def test_run_folds_error_back_into_work_queue():
+    # The run must not negate the retryable Error label, so a failed Email is
+    # picked up again; terminal labels stay excluded.
+    gmail = _FakeGmail([_email("e1")])
+    orch = Orchestrator(gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX)
+
+    orch.run(cutoff=None, bucket_labels=("Passed-BuyBox", "Rejected", "Error"))
+
+    assert gmail.fetch_retryable == ("Error",)
+
+
+def test_recent_error_email_stays_error_within_window():
+    # Received 1 day ago — inside the escalation window — so it retries as Error.
+    gmail = _FakeGmail([_email("e1", date_hdr="Tue, 14 Jul 2026 09:00:00 +0000")])
+    orch = _erroring_orch(gmail)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.bucket is Bucket.ERROR
+    assert gmail.labels["e1"] == "Error"
+    assert "e1" not in gmail.removed  # nothing to strip on a plain retry
+
+
+def test_old_error_email_escalates_to_needs_human():
+    # Received 5 days ago and still failing -> escalate to Needs-Human, stripping
+    # the stale Error label so it ends in exactly one Bucket.
+    gmail = _FakeGmail([_email("e1", date_hdr="Thu, 10 Jul 2026 09:00:00 +0000")])
+    orch = _erroring_orch(gmail)
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.bucket is Bucket.NEEDS_HUMAN
+    assert result.error  # the failure is still recorded
+    assert gmail.labels["e1"] == "Needs-Human"
+    assert gmail.removed["e1"] == ["Error"]
+
+
+def test_escalation_boundary_is_the_configured_window():
+    # Exactly at the window (3 days) escalates; the day before does not.
+    at = _FakeGmail([_email("e1", date_hdr="Sun, 12 Jul 2026 09:00:00 +0000")])
+    assert _erroring_orch(at).process_email(at.fetch_email("e1")).bucket is Bucket.NEEDS_HUMAN
+
+    before = _FakeGmail([_email("e1", date_hdr="Mon, 13 Jul 2026 09:00:00 +0000")])
+    assert _erroring_orch(before).process_email(before.fetch_email("e1")).bucket is Bucket.ERROR
+
+
+def test_unparseable_date_cannot_be_aged_so_stays_error():
+    # No usable received date -> can't escalate on age -> keep retrying as Error.
+    gmail = _FakeGmail([_email("e1", date_hdr="not a date")])
+    orch = _erroring_orch(gmail)
+
+    assert orch.process_email(gmail.fetch_email("e1")).bucket is Bucket.ERROR
+
+
+def test_transient_failure_that_later_succeeds_ends_in_terminal_bucket():
+    email = _email("e1", date_hdr="Tue, 14 Jul 2026 09:00:00 +0000")
+    gmail = _FakeGmail([email])
+
+    # Run 1: extraction fails -> Error (within window).
+    fail = Orchestrator(gmail, _FakeSheets(), _FakeLadder({"e1": RuntimeError("blip")}), BUYBOX, today=TODAY)
+    assert fail.process_email(email).bucket is Bucket.ERROR
+    assert gmail.labels["e1"] == "Error"
+
+    # Run 2 (next daily run): the blip is gone; it passes and the stale Error
+    # label is stripped so the Email ends in exactly one terminal Bucket.
+    ok = Orchestrator(gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX, today=TODAY)
+    result = ok.process_email(email)
+
+    assert result.bucket is Bucket.PASSED_BUYBOX
+    assert gmail.labels["e1"] == "Passed-BuyBox"
+    assert gmail.removed["e1"] == ["Error"]
+
+
+def test_escalation_is_suppressed_in_dry_run():
+    gmail = _FakeGmail([_email("e1", date_hdr="Thu, 10 Jul 2026 09:00:00 +0000")])
+    orch = Orchestrator(
+        gmail, _FakeSheets(), _FakeLadder({"e1": RuntimeError("boom")}), BUYBOX,
+        dry_run=True, today=TODAY,
+    )
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.bucket is Bucket.NEEDS_HUMAN  # verdict computed
+    assert gmail.labels == {}                    # but no label applied
 
 
 def _needs_human_calc_ready_fields():
