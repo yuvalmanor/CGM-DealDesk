@@ -96,3 +96,43 @@ def test_unparseable_gate_value_is_treated_as_missing():
     ev = evaluate(_base(year_built="unknown"), BUYBOX)
     assert ev.verdict is Verdict.NEEDS_HUMAN
     assert "year_built" in ev.missing_fields
+
+
+# --- property-type gate (SFH-only allowlist) -------------------------------
+# A membership gate: only `single_family` passes; any other present type Rejects;
+# a missing type is Needs-Human. Mirrors the shipped config.
+TYPED_BUYBOX = BuyBox(
+    fields=(
+        FieldSpec("property_type", "gate", "none", "in", ["single_family"]),
+        FieldSpec("purchase_price", "gate", "feed-required", "<=", 350000),
+        FieldSpec("year_built", "gate", "none", ">=", 1995),
+        FieldSpec("monthly_rent", "none", "feed-required"),
+    )
+)
+
+
+def test_single_family_passes_the_type_gate():
+    fields = {"property_type": "single_family", "purchase_price": 250000, "year_built": 2010, "monthly_rent": 2000}
+    assert evaluate(fields, TYPED_BUYBOX).verdict is Verdict.PASS
+
+
+def test_lot_rejects_and_short_circuits_missing_year_built():
+    # The real-world case: a vacant lot has no year_built, but the wrong type is a
+    # confident Reject that must win over Needs-Human — so lots auto-file, never
+    # waiting on a human. (year_built deliberately absent.)
+    fields = {"property_type": "vacant_lot", "purchase_price": 90000}
+    ev = evaluate(fields, TYPED_BUYBOX)
+    assert ev.verdict is Verdict.REJECT
+    assert any("property_type" in r for r in ev.reasons)
+
+
+def test_mobile_home_rejects_on_type_gate():
+    fields = {"property_type": "mobile_home", "purchase_price": 120000, "year_built": 2005, "monthly_rent": 1500}
+    assert evaluate(fields, TYPED_BUYBOX).verdict is Verdict.REJECT
+
+
+def test_missing_property_type_is_needs_human():
+    fields = {"purchase_price": 250000, "year_built": 2010, "monthly_rent": 2000}
+    ev = evaluate(fields, TYPED_BUYBOX)
+    assert ev.verdict is Verdict.NEEDS_HUMAN
+    assert "property_type" in ev.missing_fields

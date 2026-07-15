@@ -19,12 +19,29 @@ from typing import Protocol, runtime_checkable
 _EXTRACT_FIELDS = (
     "address",
     "city",
+    "property_type",
     "purchase_price",
     "monthly_rent",
     "arv",
     "year_built",
     "beds",
     "baths",
+)
+
+# Controlled vocabulary for ``property_type`` so the Buy Box's membership gate can
+# match it deterministically. The model must pick one of these or omit the field
+# when it can't tell — never invent a value (an omitted type reaches a human as
+# Needs-Human rather than being falsely Rejected).
+_PROPERTY_TYPES = (
+    "single_family",
+    "multi_family",
+    "condo",
+    "townhouse",
+    "mobile_home",
+    "manufactured",
+    "vacant_lot",
+    "land",
+    "commercial",
 )
 
 
@@ -59,7 +76,11 @@ class AnthropicFallback:
                     "content": (
                         "Extract every distinct property offered in the text below "
                         "into the `properties` array. One object per property. Omit "
-                        "any field you cannot find rather than guessing.\n\n"
+                        "any field you cannot find rather than guessing. For "
+                        "`property_type`, classify into one of the schema's allowed "
+                        "values (a house is `single_family`; a vacant/build-ready/"
+                        "commercial lot is `vacant_lot`, `land`, or `commercial`); "
+                        "omit it if genuinely unclear.\n\n"
                         f"{text}"
                     ),
                 }
@@ -77,6 +98,7 @@ _PROPERTY_SCHEMA = {
     "properties": {
         "address": {"type": "string"},
         "city": {"type": "string"},
+        "property_type": {"type": "string", "enum": list(_PROPERTY_TYPES)},
         "purchase_price": {"type": "number"},
         "monthly_rent": {"type": "number"},
         "arv": {"type": "number"},
