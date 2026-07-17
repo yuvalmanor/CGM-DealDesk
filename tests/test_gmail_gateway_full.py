@@ -102,6 +102,92 @@ def _message_with_attachment():
     }
 
 
+def _message_with_parts(parts):
+    return {
+        "id": "m1",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "reed.hunter@newwestern.com"},
+                {"name": "Subject", "value": "Available - Granbury, TX, 76049"},
+                {"name": "Date", "value": "Thu, 16 Jul 2026 22:56:02 +0000"},
+            ],
+            "mimeType": "multipart/alternative",
+            "parts": parts,
+        },
+    }
+
+
+def test_fetch_email_reads_an_html_only_body():
+    # Real Sources (New Western, Diamond Acquisitions) send a lone text/html
+    # part. Without this the whole ladder saw nothing but the subject line.
+    html = "<table><tr><td>Cash Price</td><td>$97,500</td></tr></table>"
+    messages = _FakeMessages(
+        _message_with_parts([{"mimeType": "text/html", "body": {"data": _b64url(html)}}]), ""
+    )
+    gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))
+
+    email = gateway.fetch_email("m1")
+
+    assert "Cash Price $97,500" in email.body_text
+
+
+def test_plain_text_wins_over_the_html_alternative():
+    # multipart/alternative parts are the same content twice; concatenating both
+    # would double the AI rung's token cost for no gain.
+    messages = _FakeMessages(
+        _message_with_parts(
+            [
+                {"mimeType": "text/plain", "body": {"data": _b64url("Asking Price: $250,000")}},
+                {"mimeType": "text/html", "body": {"data": _b64url("<p>Asking Price: $250,000</p>")}},
+            ]
+        ),
+        "",
+    )
+    gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))
+
+    email = gateway.fetch_email("m1")
+
+    assert email.body_text == "Asking Price: $250,000"  # once, not twice
+
+
+def test_blank_plain_part_falls_back_to_html():
+    # Some senders ship an empty text/plain stub alongside the real HTML.
+    messages = _FakeMessages(
+        _message_with_parts(
+            [
+                {"mimeType": "text/plain", "body": {"data": _b64url("   \n  ")}},
+                {"mimeType": "text/html", "body": {"data": _b64url("<p>Year Built 1985</p>")}},
+            ]
+        ),
+        "",
+    )
+    gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))
+
+    assert gateway.fetch_email("m1").body_text == "Year Built 1985"
+
+
+def test_attached_html_file_stays_an_attachment():
+    messages = _FakeMessages(
+        _message_with_parts(
+            [
+                {"mimeType": "text/html", "body": {"data": _b64url("<p>Real body</p>")}},
+                {
+                    "mimeType": "text/html",
+                    "filename": "report.html",
+                    "body": {"attachmentId": "att-1"},
+                },
+            ]
+        ),
+        _b64url("<p>Attached report</p>"),
+    )
+    gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))
+
+    email = gateway.fetch_email("m1")
+
+    assert email.body_text == "Real body"
+    assert [a.filename for a in email.attachments] == ["report.html"]
+
+
 def test_fetch_email_parses_body_and_downloads_attachment():
     messages = _FakeMessages(_message_with_attachment(), _b64url("PDFBYTES"))
     service = _FakeService(messages, _FakeLabels([]))

@@ -26,9 +26,27 @@ _RENT_RE = re.compile(
 )
 _ARV_RE = re.compile(r"\barv\b[^\d$]{0,12}\$?\s*([\d,]{3,})", re.IGNORECASE)
 _YEAR_RE = re.compile(r"(?:year\s+built|yr\s+built|built)\b[^\d]{0,8}(\d{4})", re.IGNORECASE)
-_BEDS_RE = re.compile(r"(\d+)\s*(?:beds?|br|bd)\b", re.IGNORECASE)
-_BATHS_RE = re.compile(r"(\d+(?:\.\d)?)\s*(?:baths?|ba)\b", re.IGNORECASE)
+# Beds/baths come in two orientations. Prose is value-first ("3 bed / 2 bath");
+# the table layouts HTML Sources use are label-first ("Beds\n5"). Value-first is
+# tried first because it is the less ambiguous of the two — run label-first
+# against "3 bed / 2 bath" and it happily reads the *baths* number as beds.
+#
+# Only horizontal space may sit between a value and its label: a newline means
+# the number belongs to the previous label in a table ("$279,990\n\nBeds\n5"),
+# where reading it value-first yields 990 beds. The lookbehind stops a count
+# being lopped off the tail of a larger number for the same reason.
+_BEDS_RE = re.compile(r"(?<![\d,])(\d+)[ \t]*(?:beds?|br|bd)\b", re.IGNORECASE)
+_BATHS_RE = re.compile(r"(?<![\d,])(\d+(?:\.\d)?)[ \t]*(?:baths?|ba)\b", re.IGNORECASE)
+_BEDS_LABEL_RE = re.compile(r"\b(?:bedrooms?|beds?)\b\D{0,10}?(\d+)", re.IGNORECASE)
+_BATHS_LABEL_RE = re.compile(r"\b(?:bathrooms?|baths?)\b\D{0,10}?(\d+(?:\.\d)?)", re.IGNORECASE)
 _ADDRESS_LABEL_RE = re.compile(r"(?:address|property)\s*[:\-]\s*(.+)", re.IGNORECASE)
+# The label alone is too weak a signal: boilerplate headings ("NO UNACCOMPANIED
+# ENTRY OF PROPERTY: Broker and its affiliates...") match it and would capture a
+# paragraph of legalese. A mailing address always carries a number (street number
+# and/or ZIP) and is short. A *wrong* address is worse than none — it reaches the
+# Triage Log and seeds the re-send lookup — so a candidate must look like one.
+_ADDRESS_MAX_LEN = 100
+_DIGIT_RE = re.compile(r"\d")
 _CITY_LABEL_RE = re.compile(r"\bcity\s*[:\-]\s*([A-Za-z .'\-]+)", re.IGNORECASE)
 # Fallback city derivation: "..., Fort Worth TX 76101" or "..., Dallas, TX".
 _CITY_FROM_ADDR_RE = re.compile(r",\s*([A-Za-z .'\-]+?)\s*,?\s*(?:TX|Texas)\b", re.IGNORECASE)
@@ -44,16 +62,20 @@ def generic_extract(text: str) -> dict:
     if year:
         fields["year_built"] = int(year.group(1))
 
-    beds = _BEDS_RE.search(text)
+    beds = _BEDS_RE.search(text) or _BEDS_LABEL_RE.search(text)
     if beds:
         fields["beds"] = int(beds.group(1))
-    baths = _BATHS_RE.search(text)
+    baths = _BATHS_RE.search(text) or _BATHS_LABEL_RE.search(text)
     if baths:
         fields["baths"] = float(baths.group(1))
 
-    address = _ADDRESS_LABEL_RE.search(text)
-    if address:
-        fields["address"] = address.group(1).strip()
+    # Scan every labeled candidate, not just the first: boilerplate can precede
+    # the real address in the text.
+    for match in _ADDRESS_LABEL_RE.finditer(text):
+        candidate = match.group(1).strip()
+        if _plausible_address(candidate):
+            fields["address"] = candidate
+            break
 
     city = _CITY_LABEL_RE.search(text)
     if city:
@@ -64,6 +86,10 @@ def generic_extract(text: str) -> dict:
             fields["city"] = m.group(1).strip()
 
     return fields
+
+
+def _plausible_address(value: str) -> bool:
+    return bool(value) and len(value) <= _ADDRESS_MAX_LEN and _DIGIT_RE.search(value) is not None
 
 
 def _put_number(fields: dict, key: str, pattern: re.Pattern, text: str) -> None:

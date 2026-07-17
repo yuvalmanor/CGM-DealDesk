@@ -12,6 +12,7 @@ import base64
 from datetime import date
 from email.message import EmailMessage
 
+from .html_text import html_to_text
 from .models import Attachment, Email, MessageMeta
 from .query import build_work_queue_query
 
@@ -19,6 +20,7 @@ from .query import build_work_queue_query
 _USER_ID = "me"
 _METADATA_HEADERS = ["From", "Subject", "Date"]
 _TEXT_MIME = "text/plain"
+_HTML_MIME = "text/html"
 
 
 class GmailGateway:
@@ -70,22 +72,37 @@ class GmailGateway:
         return result
 
     def fetch_email(self, msg_id: str) -> Email:
-        """Fetch an Email in full: plain-text body plus every attachment's bytes
-        (attachment payloads are downloaded separately by Gmail's API)."""
+        """Fetch an Email in full: body text plus every attachment's bytes
+        (attachment payloads are downloaded separately by Gmail's API).
+
+        Body text comes from the ``text/plain`` part when there is one. Many
+        Sources send **HTML-only** — a lone ``text/html`` part with no plain
+        alternative — so an empty plain body falls back to the HTML converted to
+        text; otherwise those Emails would reach extraction as a subject line.
+        The parts of a ``multipart/alternative`` are the *same* content in two
+        encodings, so plain wins when present rather than both being
+        concatenated: that would double the AI rung's token cost for no gain."""
         messages = self._service.users().messages()
         detail = messages.get(userId=_USER_ID, id=msg_id, format="full").execute()
         headers = _header_map(detail.get("payload", {}))
 
         body_parts: list[str] = []
+        html_parts: list[str] = []
         attachments: list[Attachment] = []
-        self._walk_payload(msg_id, detail.get("payload", {}), body_parts, attachments)
+        self._walk_payload(
+            msg_id, detail.get("payload", {}), body_parts, html_parts, attachments
+        )
+
+        body_text = "\n".join(body_parts)
+        if not body_text.strip() and html_parts:
+            body_text = html_to_text("\n".join(html_parts))
 
         return Email(
             id=msg_id,
             from_addr=headers.get("from", ""),
             subject=headers.get("subject", ""),
             date=headers.get("date", ""),
-            body_text="\n".join(body_parts),
+            body_text=body_text,
             attachments=tuple(attachments),
         )
 
@@ -138,11 +155,13 @@ class GmailGateway:
                 userId=_USER_ID, id=sent["id"], body={"addLabelIds": [label_id]}
             ).execute()
 
-    def _walk_payload(self, msg_id, payload, body_parts, attachments) -> None:
+    def _walk_payload(self, msg_id, payload, body_parts, html_parts, attachments) -> None:
         mime = payload.get("mimeType", "")
         body = payload.get("body", {})
         filename = payload.get("filename", "")
 
+        # A named part with its own payload is an attachment (incl. an attached
+        # .html file) — checked first so it is never mistaken for the body.
         if filename and body.get("attachmentId"):
             data = self._service.users().messages().attachments().get(
                 userId=_USER_ID, messageId=msg_id, id=body["attachmentId"]
@@ -151,9 +170,11 @@ class GmailGateway:
             attachments.append(Attachment(filename=filename, mime_type=mime, data=raw))
         elif mime == _TEXT_MIME and body.get("data"):
             body_parts.append(_b64url(body["data"]).decode("utf-8", errors="replace"))
+        elif mime == _HTML_MIME and body.get("data"):
+            html_parts.append(_b64url(body["data"]).decode("utf-8", errors="replace"))
 
         for part in payload.get("parts", []) or []:
-            self._walk_payload(msg_id, part, body_parts, attachments)
+            self._walk_payload(msg_id, part, body_parts, html_parts, attachments)
 
     def _resolve_label_id(self, label_name: str) -> str:
         existing = self._existing_label_id(label_name)
