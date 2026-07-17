@@ -137,19 +137,21 @@ On ingest, run a cheap normalized-address lookup (Address Normalizer + a scan of
 
 ---
 
-## Phase 7: Scheduling — unattended daily run
+## Phase 7: Scheduling — the unattended-run artifacts
 
-**User stories**: 1, 42, 43
+**User stories**: 42 (+ the build half of 1 and 43 — installing and observing them is Phase 9)
 
 ### What to build
 
-Wrap the pipeline for hands-off operation: a single run command wired into **Windows Task Scheduler** to fire once daily at zero idle-run token cost, with "run task as soon as possible after a missed scheduled start" enabled so a powered-off/asleep machine self-heals on next boot.
+Wrap the pipeline for hands-off operation: a single run command wired for **Windows Task Scheduler** to fire once daily at zero idle-run token cost, with "run task as soon as possible after a missed scheduled start" enabled so a powered-off/asleep machine self-heals on next boot.
+
+**Scope note (2026-07-17):** this phase ships the *artifacts* — task definition, wrapper, installer, docs, tests. **Registering** the task on the operator's machine and verifying the two guarantees that only exist once Task Scheduler holds it moved to **Phase 9**, because the operator installs it themselves and neither claim can be honestly verified from this repo alone.
 
 ### Acceptance criteria
 
-- [ ] A documented Task Scheduler task runs the pipeline once daily against the live Inbox. _(**Built, not yet installed.** `scripts/dealdesk-daily.xml` (daily trigger, `DaysInterval=1`) + `scripts/install-task.ps1` + a README "Scheduling" section; `install-task.ps1 -PrintOnly` verified live, resolving the real user/paths/start time. The wrapper was driven against the live Inbox (`run-daily.ps1 --dry-run --no-ai --limit 1` → 1 Email read, exit 0). Stays unchecked because the operator elected to register the task themselves (2026-07-17) — until it exists in Task Scheduler there is no "runs once daily" behavior to verify.)_
 - [x] Firing costs nothing while idle (no agent loop); the run is a plain script invocation. _(The action is a single `Exec`: `powershell.exe -NoProfile -NonInteractive -File run-daily.ps1` — a process that starts, works, and exits, with no resident agent between runs. Driven live: the wrapper ran the pipeline and exited, propagating the pipeline's own exit code (0 on success, 2 on failure) so Task Scheduler's `LastTaskResult` is meaningful. `test_schedule::test_action_is_a_plain_script_invocation`.)_
-- [ ] A missed scheduled run (machine off/asleep) executes at the next opportunity rather than skipping the day. _(**Encoded, not yet observed.** `StartWhenAvailable=true`, plus `DisallowStartIfOnBatteries=false` so Windows' default doesn't silently re-skip the catch-up run on a laptop; `WakeToRun=false` per ADR-0001. `test_missed_run_executes_at_next_opportunity` + `test_a_missed_run_is_not_skipped_on_battery` pin them in the template. Unchecked because observing a genuinely missed run requires the registered task — note `LogonType=InteractiveToken` makes "next opportunity" mean next **logon**, not next boot.)_
+- [x] The scheduling artifacts exist, are documented, and encode the daily + catch-up guarantees Phase 9 will verify. _(`scripts/dealdesk-daily.xml` (`DaysInterval=1`; `StartWhenAvailable=true`; `DisallowStartIfOnBatteries=false` so Windows' default doesn't silently re-skip the catch-up run on a laptop; `WakeToRun=false` per ADR-0001), `scripts/run-daily.ps1`, `scripts/install-task.ps1`, and a README "Scheduling" section. `install-task.ps1 -PrintOnly` verified live — resolves the real user/paths/start time and refuses an unsubstituted placeholder. `tests/test_schedule.py` (10 cases) pins each setting and cross-checks that the installer substitutes every placeholder the template declares.)_
+- [x] The wrapper drives the real pipeline against the live Inbox and leaves a usable record. _(`run-daily.ps1 --dry-run --no-ai --limit 1` → 1 Email read, exit 0, no writes/tokens; a failing run propagates exit 2. Output is teed to `logs/dealdesk-<date>.log`, pruned after 30 days. UTF-8 is pinned across the redirection: piped rather than consoled, python fell back to the locale encoding and the run's em-dashes landed in the log as `U+FFFD` — verified fixed at the byte level (`E2 80 94`).)_
 
 ---
 
@@ -170,3 +172,26 @@ A **repeatable pattern**, not a fixed set: for each high-volume Source (ordered 
 - [ ] One golden file per Source (sample → expected extracted fields) passes.
 - [ ] The parser is tried before the AI fallback; an unknown Source still falls through to AI unchanged.
 - [ ] Verdicts/Buckets for that Source's Emails are unchanged vs. the AI-fallback baseline (behavior-preserving).
+
+---
+
+## Phase 9: Go live — install and verify the scheduled task
+
+**User stories**: 1, 43 (the operator-gated half of Phase 7)
+
+Split out of Phase 7 on 2026-07-17: the operator registers the task on their own machine, so these two guarantees have no running behavior to verify until that happens. Phase 7's artifacts are done and tested; nothing here is blocked on code.
+
+### What to build
+
+Probably nothing. This is the **operator action** Phase 7 deferred, plus verification against the registered task:
+
+1. Set the credentials **user-scoped** (`setx GOOGLE_SERVICE_ACCOUNT_KEY …`, `setx ANTHROPIC_API_KEY …`) — a scheduled run does not inherit a shell's exported variables.
+2. Register via `.\scripts\install-task.ps1` (`-At HH:mm` to choose the hour).
+3. Verify the criteria below against Task Scheduler's own view of the task, not the template in this repo.
+
+Fix anything registration surfaces in the **Phase 7 artifacts** rather than working around it here. Known risks worth watching: this is an Entra-joined machine, so the principal resolves to `AzureAD\<user>` — confirm Windows accepts it; and confirm the task's process actually sees the user-scoped env vars.
+
+### Acceptance criteria
+
+- [ ] A documented Task Scheduler task runs the pipeline once daily against the live Inbox. _(Verify on the registered task: `Get-ScheduledTaskInfo` shows a `NextRunTime` one day out and, after a real fire, `LastTaskResult = 0` with a matching `logs/dealdesk-<date>.log` and a Daily Digest in the Inbox.)_
+- [ ] A missed scheduled run (machine off/asleep) executes at the next opportunity rather than skipping the day. _(The honest test is observational: leave the machine off across a scheduled time and confirm the run fires afterwards rather than being skipped. Note `LogonType=InteractiveToken` means "next opportunity" is next **logon**, not next boot — if that proves too weak in practice, the alternatives are a stored-password principal (`Password`/`S4U`) or ADR-0001's documented GitHub Actions escape hatch, both of which are **planning decisions to raise, not to make here**.)_

@@ -8,10 +8,14 @@ Inbox. See [CONTEXT.md](CONTEXT.md), [ADR-0001](docs/adr/0001-local-python-pipel
 
 ## Status
 
-**Phase 7 — Scheduling.** The pipeline runs itself: a Windows Task Scheduler task
-fires `dealdesk run` once a day as a plain script, so idling costs nothing and a
-run missed while the machine was off is picked up at the next opportunity rather
-than skipped. See [Scheduling](#scheduling--unattended-daily-run) to install it.
+**Phase 7 — Scheduling.** Everything needed to run DealDesk hands-off now ships:
+a Windows Task Scheduler definition that fires `dealdesk run` once a day as a
+plain script (no agent loop, so idling costs nothing) and picks up a run missed
+while the machine was off rather than skipping the day; a wrapper that logs each
+run and surfaces its exit code; and a one-command installer.
+
+**Not yet installed** — the task doesn't exist until you register it. See
+[Scheduling](#scheduling--unattended-daily-run) to go live.
 
 **Phase 6 — Re-send soft flag.** On ingest, each Property's address is reduced to
 a normalized key and looked up against the Properties already in the Triage Log
