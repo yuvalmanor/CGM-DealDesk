@@ -150,6 +150,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     fed_verb = "would feed" if args.dry_run else "fed"
     print(f"Calculator: {fed_verb} {deals_fed} calc-ready deal(s) to {config.calc_tab}")
 
+    resends = sum(r.resends for r in results)
+    if resends:
+        print(f"Re-sends: {resends} Property(s) flagged as a possible re-send (soft flag; rows are never merged)")
+
     notified = sum(r.notified for r in results)
     if args.dry_run:
         print(f"Notifications: would send {notified} Deal Notification(s) + 1 Daily Digest")

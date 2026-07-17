@@ -1,9 +1,10 @@
 """Triage Log row — the per-Property system of record.
 
 One row per Property in the ``DEALS_TRIAGE`` sheet. Keyed on (message-id,
-property index) so the upsert is idempotent across a crash/retry. Columns for
-later phases (re-send flag, DEALS_APP row id, notified) exist now but are written
-blank so the sheet's shape stays stable as phases land.
+property index) so the upsert is idempotent across a crash/retry. A re-sent
+Property gets its own new row like any other — rows are never merged, so the
+address appearing twice is a feature (the re-send breadcrumb points back), not a
+duplicate to collapse.
 """
 
 from __future__ import annotations
@@ -79,6 +80,7 @@ def build_triage_row(
     evaluation: Evaluation,
     deals_app_row_id: str = "",
     notified: bool = False,
+    resend_flag: str = "",
 ) -> TriageRow:
     return TriageRow(
         message_id=email.id,
@@ -86,11 +88,15 @@ def build_triage_row(
         received_date=email.date,
         source=derive_source(email.from_addr),
         address=str(fields.get("address", "")),
+        # The extracted facts, and only those — the re-send breadcrumb is
+        # DealDesk's own annotation, so it gets its own column rather than
+        # polluting the record of what the Source actually said.
         facts_json=json.dumps(fields, sort_keys=True),
         verdict=evaluation.verdict.value,
         reasons="; ".join(evaluation.reasons),
         calc_ready=evaluation.calc_ready,
         missing_fields="; ".join(evaluation.missing_fields),
+        resend_flag=resend_flag,
         deals_app_row_id=deals_app_row_id,
         notified=notified,
     )

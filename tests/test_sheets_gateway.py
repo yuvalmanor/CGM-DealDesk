@@ -5,6 +5,7 @@ place, and a re-upsert of the same key never duplicates the row (the idempotency
 that makes crash-recovery safe).
 """
 
+import json
 import re
 
 from dealdesk.sheets_gateway import SheetsGateway
@@ -139,3 +140,67 @@ def test_fetch_notified_returns_only_notified_indices_for_the_email():
     assert gw.fetch_notified("m1") == {0}
     assert gw.fetch_notified("m2") == {0}
     assert gw.fetch_notified("absent") == set()
+
+
+# --- Phase 6: the re-send lookup's read side ------------------------------
+
+def _priced_row(msg_id, index, address, verdict="Reject", price=300000):
+    return TriageRow(
+        message_id=msg_id, property_index=index, received_date="Fri, 12 Jun 2026 09:00:00 +0000",
+        source="acme.com", address=address,
+        facts_json=json.dumps({"address": address, "purchase_price": price}),
+        verdict=verdict, reasons="", calc_ready=True, missing_fields="",
+    )
+
+
+def test_fetch_prior_properties_reads_back_what_upsert_wrote():
+    service = _FakeSheetsService()
+    gw = SheetsGateway(service, "sid", "DEALS_TRIAGE")
+    gw.upsert_rows([_priced_row("m1", 0, "123 Main St")])
+
+    priors = gw.fetch_prior_properties()
+
+    assert len(priors) == 1
+    assert priors[0].message_id == "m1"
+    assert priors[0].property_index == 0
+    assert priors[0].address == "123 Main St"
+    assert priors[0].verdict == "Reject"
+    assert priors[0].price == 300000.0  # pulled out of the stored facts
+    assert priors[0].received_date == "Fri, 12 Jun 2026 09:00:00 +0000"
+
+
+def test_fetch_prior_properties_skips_the_header_and_keeps_sheet_order():
+    service = _FakeSheetsService()
+    gw = SheetsGateway(service, "sid", "DEALS_TRIAGE")
+    gw.upsert_rows([_priced_row("m1", 0, "123 Main St"), _priced_row("m2", 0, "9 Oak Dr")])
+
+    assert [p.message_id for p in gw.fetch_prior_properties()] == ["m1", "m2"]
+
+
+def test_fetch_prior_properties_is_empty_on_a_fresh_sheet():
+    service = _FakeSheetsService()
+
+    assert SheetsGateway(service, "sid", "DEALS_TRIAGE").fetch_prior_properties() == []
+
+
+def test_fetch_prior_properties_tolerates_a_row_with_unreadable_facts():
+    service = _FakeSheetsService()
+    gw = SheetsGateway(service, "sid", "DEALS_TRIAGE")
+    gw.upsert_rows([_row("m1", 0)])  # facts_json is "{}" — no price recorded
+
+    priors = gw.fetch_prior_properties()
+
+    assert len(priors) == 1
+    assert priors[0].price is None  # the row still counts, it just carries no price
+
+
+def test_fetch_prior_properties_does_not_write():
+    service = _FakeSheetsService()
+    gw = SheetsGateway(service, "sid", "DEALS_TRIAGE")
+    gw.upsert_rows([_priced_row("m1", 0, "123 Main St")])
+    before = [list(r) for r in service.store["rows"]]
+
+    gw.fetch_prior_properties()
+
+    # Prior rows are read, never re-written or re-evaluated.
+    assert service.store["rows"] == before

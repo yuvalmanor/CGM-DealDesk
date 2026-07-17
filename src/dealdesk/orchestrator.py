@@ -24,6 +24,11 @@ guarded by the ``notified`` flag on its Triage row: the orchestrator reads which
 indices were already notified, marks the ones it sends, and so a retry never
 re-emails. The per-run Daily Digest is assembled from all results and sent once
 in ``run``.
+
+The re-send lookup (Phase 6) runs on ingest, before evaluation, and only
+*annotates*: a Property whose normalized address matches an earlier Triage row is
+stamped with a breadcrumb carried onto its row and into its notification. It
+changes no Verdict, merges no row, and re-evaluates nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from .evaluator import Evaluation, evaluate
 from .extraction import ExtractionLadder
 from .models import RETRYABLE_BUCKET_VALUES, Bucket, Email, Verdict
 from .notifications import build_deal_notification, build_digest
+from .resend import PriorProperty, ResendIndex, build_resend_flag
 from .rollup import roll_up
 from .source import derive_source
 from .triage_log import build_triage_row
@@ -54,6 +60,7 @@ class EmailResult:
     sender: str = ""
     deals_fed: int = 0
     notified: int = 0
+    resends: int = 0
 
 
 class Orchestrator:
@@ -86,6 +93,7 @@ class Orchestrator:
         self._calc_link = calc_link
         self._today = today
         self._escalate_after_days = escalate_after_days
+        self._index: ResendIndex | None = None  # re-send lookup, loaded once per run
 
     def run(self, cutoff: date, bucket_labels, limit: int | None = None) -> list[EmailResult]:
         # Fold retryable Buckets (Error) back into the queue: they are not negated
@@ -133,6 +141,8 @@ class Orchestrator:
             # happens after (both are idempotent, so the order is crash-safe).
             feeds: list[tuple[str, dict]] = []
             fed_ids: dict[int, str] = {}
+            resends: dict[int, str] = {}
+            index = self._resend_index()
             rows = []
             for i, (fields, ev) in enumerate(zip(properties, evaluations)):
                 row_id = ""
@@ -141,8 +151,27 @@ class Orchestrator:
                     feeds.append((row_id, build_deal_input(fields, self._assumptions)))
                     fed_ids[i] = row_id
                 notified = (i in already) or (i in notify_set)
-                rows.append(
-                    build_triage_row(email, i, fields, ev, deals_app_row_id=row_id, notified=notified)
+
+                address = fields.get("address", "")
+                flag = build_resend_flag(index.lookup(address, exclude_message_id=email.id))
+                if flag:
+                    resends[i] = flag
+                row = build_triage_row(
+                    email, i, fields, ev,
+                    deals_app_row_id=row_id, notified=notified, resend_flag=flag,
+                )
+                rows.append(row)
+                # This Property is now itself a prior, so a later Email in this
+                # same run offering the same house gets flagged too.
+                index.add(
+                    PriorProperty(
+                        message_id=email.id,
+                        property_index=i,
+                        address=row.address,
+                        verdict=ev.verdict.value,
+                        price=_price_of(fields),
+                        received_date=email.date,
+                    )
                 )
 
             if not self._dry_run:
@@ -157,7 +186,9 @@ class Orchestrator:
                     email.id, bucket.value, remove_labels=(Bucket.ERROR.value,)
                 )
                 # Notifications are best-effort *after* the Email is done.
-                self._send_deal_notifications(email, properties, evaluations, send_now, fed_ids)
+                self._send_deal_notifications(
+                    email, properties, evaluations, send_now, fed_ids, resends
+                )
 
             # dry-run previews would-notify; a live run reports what it queued.
             notified_count = len(candidates) if self._dry_run else len(send_now)
@@ -170,6 +201,7 @@ class Orchestrator:
                 sender=email.from_addr,
                 deals_fed=len(feeds),
                 notified=notified_count,
+                resends=len(resends),
             )
         except Exception as exc:  # handled mid-run failure -> Error (retryable)
             bucket = self._error_bucket(email)
@@ -207,6 +239,25 @@ class Orchestrator:
         today = self._today or date.today()
         return (today - received.date()).days
 
+    def _resend_index(self) -> ResendIndex:
+        """The re-send lookup, loaded lazily and kept for the life of the run —
+        one Triage Log scan per run, not per Email. The run keeps adding to it as
+        it records Properties, so it stays current without re-reading."""
+        if self._index is None:
+            self._index = ResendIndex(self._fetch_priors())
+        return self._index
+
+    def _fetch_priors(self) -> list[PriorProperty]:
+        """Prior Properties from the Triage Log. Empty when there's no sheet to
+        read (dry-run): the run then flags only re-sends *within* the run, which
+        is an honest preview rather than a wrong one."""
+        if self._dry_run or self._sheets is None:
+            return []
+        fetch = getattr(self._sheets, "fetch_prior_properties", None)
+        if fetch is None:
+            return []
+        return list(fetch())
+
     def _already_notified(self, message_id: str) -> set[int]:
         """Property indices already notified on a prior run (empty in dry-run or
         when the sheet can't be read). The `notified` guard's read side."""
@@ -217,7 +268,9 @@ class Orchestrator:
             return set()
         return fetch(message_id)
 
-    def _send_deal_notifications(self, email, properties, evaluations, send_now, fed_ids) -> None:
+    def _send_deal_notifications(
+        self, email, properties, evaluations, send_now, fed_ids, resends
+    ) -> None:
         source = derive_source(email.from_addr)
         for i in send_now:
             fields, ev = properties[i], evaluations[i]
@@ -226,7 +279,7 @@ class Orchestrator:
                 ev,
                 source=source,
                 calc_link=self._calc_link_for(fed_ids.get(i)),
-                resend_flag=str(fields.get("resend_flag", "")),
+                resend_flag=resends.get(i, ""),
             )
             self._gmail.send_message(
                 self._notify_to, notification.subject, notification.body,
@@ -249,3 +302,15 @@ class Orchestrator:
         A Pass that wasn't calc-ready has no fed row; the bare sheet link stands."""
         base = self._calc_link or "(Calculator not configured)"
         return f"{base} (row {row_id})" if row_id else base
+
+
+def _price_of(fields: dict) -> float | None:
+    """The asking price, for the ``@ $300k`` half of a later re-send breadcrumb.
+    A Property with no readable price still indexes — it just carries no price."""
+    value = fields.get("purchase_price")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(str(value).strip().lstrip("$").replace(",", ""))
+    except ValueError:
+        return None

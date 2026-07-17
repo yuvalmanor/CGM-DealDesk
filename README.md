@@ -8,24 +8,31 @@ Inbox. See [CONTEXT.md](CONTEXT.md), [ADR-0001](docs/adr/0001-local-python-pipel
 
 ## Status
 
-**Phase 5 — Error retry + age-based escalation.** `Error` is now a genuinely
-*retryable* Bucket: the work-queue query no longer negates it, so a mid-run
-failure is folded back in and retried on the next daily run. When a retry
-succeeds (or an Email escalates), the stale `Error` label is stripped in the same
-modify call so every Email still ends carrying **exactly one Bucket**. An `Error`
-Email that keeps failing until it is older than `retry.escalate_after_days`
-(default **3**) is relabeled `Needs-Human`, so a genuinely broken item reaches the
-operator instead of retrying forever — **Email age stands in for a retry counter;
-there is no ledger** (an unparseable `Date` header simply can't be aged and stays
-`Error`).
+**Phase 6 — Re-send soft flag.** On ingest, each Property's address is reduced to
+a normalized key and looked up against the Properties already in the Triage Log
+(one scan per run, not per Email). A match stamps the new row's `resend_flag`
+with a breadcrumb — `possible re-send — earlier row was Reject @ $400,000 on
+2026-06-12` — which also surfaces in the Deal Notification, so a **price drop
+reviving a deal you passed on** can't slip by.
+
+It is deliberately a *soft* flag. Rows are **never merged**, prior rows are
+**never re-evaluated**, and no Verdict changes: the breadcrumb only reports what
+the earlier row said, and the operator decides. The normalizer is conservative on
+purpose — it canonicalizes spelling (`St` ≡ `Street`, `Apt 4` ≡ `#4`, casing,
+punctuation) and nothing else, because a *missed* re-send is a cheap miss while a
+*false* one is a fabricated "same house" claim. An Email is never flagged as a
+re-send of itself (the lookup excludes its own message-id), so a re-run is
+idempotent.
 
 Earlier phases are unchanged: the read half (Phase 1 — auth, work-queue query,
 read-only `discover`); the triage spine (Phase 2 — extract → evaluate → roll up →
 Triage Log → Bucket label **last**); the Calculator feed (Phase 3 — a *partial*
 `Deal` into `DEALS_APP`, all five marker keys present, ARV `0` when unknown, real
-`hmlLevPP`/`refiLtv`, idempotent by a deterministic row id); and notifications
+`hmlLevPP`/`refiLtv`, idempotent by a deterministic row id); notifications
 (Phase 4 — one Deal Notification per `Passed-BuyBox` Property behind a `notified`
-guard, plus one Daily Digest per run).
+guard, plus one Daily Digest per run); and `Error` retry with age-based
+escalation to `Needs-Human` after `retry.escalate_after_days` (Phase 5 — Email
+age stands in for a retry counter; there is no ledger).
 
 ## Setup
 

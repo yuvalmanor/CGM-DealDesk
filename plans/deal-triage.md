@@ -130,10 +130,10 @@ On ingest, run a cheap normalized-address lookup (Address Normalizer + a scan of
 
 ### Acceptance criteria
 
-- [ ] A new Property whose normalized address matches a prior Triage Log row is stamped with a re-send breadcrumb referencing the earlier row's Verdict/price.
-- [ ] Re-sends are recorded as new rows; no row is ever merged and no prior row is re-evaluated.
-- [ ] The breadcrumb surfaces in the Deal Notification (Phase 4) when present.
-- [ ] Address Normalizer golden tests cover equivalence ("St" ≡ "Street", unit suffixes, casing/whitespace) and non-equivalence (distinct houses stay distinct).
+- [x] A new Property whose normalized address matches a prior Triage Log row is stamped with a re-send breadcrumb referencing the earlier row's Verdict/price. _(`ResendIndex.lookup` + `build_resend_flag` → `TriageRow.resend_flag` via `build_triage_row`; `SheetsGateway.fetch_prior_properties` scans prior rows once per run. `test_orchestrator::test_matching_address_stamps_a_resend_breadcrumb_on_the_new_row`; drive: re-send row stamped `possible re-send — earlier row was Reject @ $400,000 on 2026-06-12`. The breadcrumb names the earlier row's **Verdict** (`Reject`) — the PRD's "`Rejected`" is the Bucket's name; per CONTEXT.md the row stores a Verdict.)_
+- [x] Re-sends are recorded as new rows; no row is ever merged and no prior row is re-evaluated. _(The lookup is read-only — `PriorProperty` carries no write path, and the upsert only ever writes the current Email's rows. `test_resend_is_recorded_as_a_new_row_and_the_prior_row_is_untouched` (prior row byte-identical after), `test_a_resend_does_not_change_the_verdict`, `test_sheets_gateway::test_fetch_prior_properties_does_not_write`; drive run 2 keeps both rows, run 3 re-runs to 3 rows unchanged.)_
+- [x] The breadcrumb surfaces in the Deal Notification (Phase 4) when present. _(Threaded orchestrator → `build_deal_notification(resend_flag=…)` rather than through `fields`, so `facts_json` stays a record of what the Source said: `test_the_breadcrumb_surfaces_in_the_deal_notification`, `test_the_breadcrumb_does_not_pollute_the_extracted_facts`; drive shows the `Re-send:` line carrying the $400,000 prior.)_
+- [x] Address Normalizer golden tests cover equivalence ("St" ≡ "Street", unit suffixes, casing/whitespace) and non-equivalence (distinct houses stay distinct). _(`tests/test_address.py`, 42 cases: street types, directionals, state, casing/whitespace/punctuation, `Apt`≡`Unit`≡`#`; non-equivalence for number/name/street-type/directional/unit/city/zip. An address with nothing identifying (`"#"`, `"N St"`) yields the empty key, which never matches.)_
 
 ---
 

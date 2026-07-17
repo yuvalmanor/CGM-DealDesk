@@ -4,6 +4,7 @@ Uses in-memory fakes for the Gmail and Sheets gateways (the Sheets fake mirrors
 the real gateway's idempotency contract: upsert keyed on (message-id, index)).
 """
 
+import json
 from datetime import date
 
 import pytest
@@ -13,6 +14,7 @@ from dealdesk.deal_input import Assumptions, feed_row_id
 from dealdesk.extraction import ExtractionResult
 from dealdesk.models import Bucket, Email
 from dealdesk.orchestrator import Orchestrator
+from dealdesk.resend import PriorProperty
 
 BUYBOX = BuyBox(
     fields=(
@@ -62,11 +64,13 @@ class _FakeGmail:
 
 class _FakeSheets:
     """Idempotent upsert keyed on row.key — the real gateway's contract. Also
-    serves the `notified` guard read (`fetch_notified`) off the stored rows."""
+    serves the `notified` guard read (`fetch_notified`) and the re-send lookup
+    (`fetch_prior_properties`) off the stored rows."""
 
     def __init__(self):
         self.rows = {}
         self.upsert_calls = 0
+        self.prior_reads = 0
 
     def upsert_rows(self, rows):
         self.upsert_calls += 1
@@ -79,6 +83,20 @@ class _FakeSheets:
             for r in self.rows.values()
             if r.message_id == message_id and r.notified
         }
+
+    def fetch_prior_properties(self):
+        self.prior_reads += 1
+        return [
+            PriorProperty(
+                message_id=r.message_id,
+                property_index=r.property_index,
+                address=r.address,
+                verdict=r.verdict,
+                price=json.loads(r.facts_json).get("purchase_price"),
+                received_date=r.received_date,
+            )
+            for r in self.rows.values()
+        ]
 
 
 class _FakeCalculator:
@@ -532,6 +550,150 @@ def test_no_recipient_configured_sends_nothing_and_does_not_mark_notified():
     assert result.notified == 0
     assert gmail.sent == []
     assert sheets.rows[("e1", "0")].notified is False
+
+
+# --- Phase 6: re-send soft flag -------------------------------------------
+
+MAIN_ST = "123 Main St, Dallas, TX"
+MAIN_STREET = "123 Main Street, Dallas, TX"  # the same house, spelled differently
+
+
+def _at(address, price=300000, year_built=2010):
+    return {
+        "address": address, "purchase_price": price,
+        "year_built": year_built, "city": "Dallas", "monthly_rent": 2000,
+    }
+
+
+def _run_email(sheets, msg_id, fields, gmail=None):
+    """One Email through its own Orchestrator — a fresh instance per call, so the
+    re-send index is re-read from the sheet exactly as the next daily run would."""
+    email = _email(msg_id)
+    gmail = gmail or _FakeGmail([email])
+    orch = Orchestrator(gmail, sheets, _FakeLadder({msg_id: [fields]}), BUYBOX)
+    return orch.process_email(email)
+
+
+def test_matching_address_stamps_a_resend_breadcrumb_on_the_new_row():
+    sheets = _FakeSheets()
+    # Last month: offered at $300k, too old -> Reject.
+    _run_email(sheets, "m1", _at(MAIN_ST, price=300000, year_built=1950))
+    # This month: same house, price dropped, and now it pencils.
+    result = _run_email(sheets, "m2", _at(MAIN_STREET, price=250000))
+
+    flag = sheets.rows[("m2", "0")].resend_flag
+    assert flag.startswith("possible re-send")
+    assert "Reject" in flag        # what the earlier row said
+    assert "$300,000" in flag      # at what price — the price drop is the point
+    assert result.resends == 1
+
+
+def test_resend_is_recorded_as_a_new_row_and_the_prior_row_is_untouched():
+    sheets = _FakeSheets()
+    _run_email(sheets, "m1", _at(MAIN_ST, price=300000, year_built=1950))
+    before = sheets.rows[("m1", "0")]
+
+    _run_email(sheets, "m2", _at(MAIN_STREET, price=250000))
+
+    # Two rows, distinct keys — never merged into one.
+    assert set(sheets.rows) == {("m1", "0"), ("m2", "0")}
+    # The prior row is byte-for-byte what it was: not re-evaluated, not restamped.
+    assert sheets.rows[("m1", "0")] == before
+    assert sheets.rows[("m1", "0")].verdict == "Reject"
+    assert sheets.rows[("m1", "0")].resend_flag == ""
+
+
+def test_a_rerun_does_not_flag_an_email_as_a_resend_of_itself():
+    # m1's own row is in the Triage Log by the second run; it must not match itself.
+    sheets = _FakeSheets()
+    _run_email(sheets, "m1", _at(MAIN_ST))
+    result = _run_email(sheets, "m1", _at(MAIN_ST))  # next daily run, same Email
+
+    assert sheets.rows[("m1", "0")].resend_flag == ""
+    assert result.resends == 0
+
+
+def test_unrelated_address_gets_no_breadcrumb():
+    sheets = _FakeSheets()
+    _run_email(sheets, "m1", _at("999 Elm Rd, Dallas, TX"))
+    result = _run_email(sheets, "m2", _at(MAIN_ST))
+
+    assert sheets.rows[("m2", "0")].resend_flag == ""
+    assert result.resends == 0
+
+
+def test_resend_within_a_single_run_is_flagged():
+    # Two wholesalers blast the same house the same day: the second Email is
+    # flagged against the first without a second sheet read.
+    emails = [_email("m1"), _email("m2")]
+    gmail = _FakeGmail(emails)
+    sheets = _FakeSheets()
+    ladder = _FakeLadder({"m1": [_at(MAIN_ST)], "m2": [_at(MAIN_STREET)]})
+    orch = Orchestrator(gmail, sheets, ladder, BUYBOX)
+
+    orch.run(cutoff=None, bucket_labels=())
+
+    assert sheets.rows[("m1", "0")].resend_flag == ""       # first sighting
+    assert "possible re-send" in sheets.rows[("m2", "0")].resend_flag
+
+
+def test_the_triage_log_is_scanned_once_per_run_not_once_per_email():
+    emails = [_email("m1"), _email("m2"), _email("m3")]
+    gmail = _FakeGmail(emails)
+    sheets = _FakeSheets()
+    ladder = _FakeLadder({e.id: [_at(MAIN_ST)] for e in emails})
+    orch = Orchestrator(gmail, sheets, ladder, BUYBOX)
+
+    orch.run(cutoff=None, bucket_labels=())
+
+    assert sheets.prior_reads == 1  # the lookup stays cheap as the sheet grows
+
+
+def test_addressless_properties_never_flag_each_other():
+    # Two Properties whose address failed to extract are not "the same house".
+    sheets = _FakeSheets()
+    _run_email(sheets, "m1", _pass_fields())
+    result = _run_email(sheets, "m2", _pass_fields())
+
+    assert sheets.rows[("m2", "0")].resend_flag == ""
+    assert result.resends == 0
+
+
+def test_the_breadcrumb_does_not_pollute_the_extracted_facts():
+    # facts_json records what the Source said; the flag is DealDesk's annotation.
+    sheets = _FakeSheets()
+    _run_email(sheets, "m1", _at(MAIN_ST, year_built=1950))
+    _run_email(sheets, "m2", _at(MAIN_STREET))
+
+    assert "resend" not in sheets.rows[("m2", "0")].facts_json
+
+
+def test_the_breadcrumb_surfaces_in_the_deal_notification():
+    sheets = _FakeSheets()
+    _run_email(sheets, "m1", _at(MAIN_ST, price=300000, year_built=1950))
+
+    # The price-drop re-send passes the Buy Box, so it earns a Deal Notification.
+    email = _email("m2")
+    gmail = _FakeGmail([email])
+    orch = _notifying_orch(
+        gmail, sheets, _FakeLadder({"m2": [_at(MAIN_STREET, price=250000)]}), _FakeCalculator()
+    )
+    orch.process_email(email)
+
+    body = _deal_notifications(gmail)[0][2]
+    assert "Re-send:" in body
+    assert "$300,000" in body  # the operator sees the drop without opening anything
+
+
+def test_a_resend_does_not_change_the_verdict():
+    # The flag annotates; it never re-decides. The same fields evaluate the same
+    # way whether or not the house was seen before.
+    sheets = _FakeSheets()
+    _run_email(sheets, "m1", _at(MAIN_ST, year_built=1950))
+    result = _run_email(sheets, "m2", _at(MAIN_STREET, year_built=1950))
+
+    assert result.bucket is Bucket.REJECTED
+    assert sheets.rows[("m2", "0")].verdict == "Reject"
 
 
 def test_crash_before_label_reruns_without_duplicating_row():
