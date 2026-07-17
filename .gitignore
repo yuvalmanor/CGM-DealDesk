@@ -10,6 +10,9 @@ dist/
 .venv/
 venv/
 
+# Scheduled-run logs (scripts/run-daily.ps1 writes one per day, pruned after 30)
+logs/
+
 # Secrets — the service-account JSON is supplied via env, never committed
 .env
 .env.local

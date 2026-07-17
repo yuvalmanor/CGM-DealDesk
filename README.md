@@ -8,6 +8,11 @@ Inbox. See [CONTEXT.md](CONTEXT.md), [ADR-0001](docs/adr/0001-local-python-pipel
 
 ## Status
 
+**Phase 7 — Scheduling.** The pipeline runs itself: a Windows Task Scheduler task
+fires `dealdesk run` once a day as a plain script, so idling costs nothing and a
+run missed while the machine was off is picked up at the next opportunity rather
+than skipped. See [Scheduling](#scheduling--unattended-daily-run) to install it.
+
 **Phase 6 — Re-send soft flag.** On ingest, each Property's address is reduced to
 a normalized key and looked up against the Properties already in the Triage Log
 (one scan per run, not per Email). A match stamps the new row's `resend_flag`
@@ -107,6 +112,61 @@ for the AI fallback. `run` needs the `gmail.modify` and `spreadsheets` scopes
 (discovery uses only `gmail.readonly`). The `[calculator]` section also carries
 the standing financing assumptions (`hml_lev_pp`, `refi_ltv`) fed into every
 Deal — keep them in sync with the Calculator's `DEFAULT_DEAL`.
+
+## Scheduling — unattended daily run
+
+The daily run is a **Windows Task Scheduler** task invoking one PowerShell
+script that exits when it's done — there's no resident agent, so firing costs
+nothing while idle (ADR-0001).
+
+```powershell
+.\scripts\install-task.ps1               # register, runs daily at 07:00
+.\scripts\install-task.ps1 -At 06:30     # pick a different time
+.\scripts\install-task.ps1 -PrintOnly    # review the task XML; register nothing
+.\scripts\install-task.ps1 -Force        # replace an existing task
+```
+
+No admin rights are needed: the task runs as you, at least privilege, with an
+interactive token, so **no password is stored**.
+
+### Credentials must be user-scoped
+
+The scheduled run does not inherit variables you `export`ed in a shell. Set them
+once, persistently, or the run fails with `Missing service-account key`:
+
+```powershell
+setx GOOGLE_SERVICE_ACCOUNT_KEY (Get-Content service-account.json -Raw)
+setx ANTHROPIC_API_KEY "<key>"
+```
+
+### What it guarantees
+
+| Setting | Why |
+|---|---|
+| `StartWhenAvailable` | A run missed while the machine was off, asleep, or logged out fires at the next opportunity — the day isn't skipped. |
+| `DisallowStartIfOnBatteries: false` | Windows' default would skip that catch-up run on a laptop, defeating the above. |
+| `WakeToRun: false` | A daily batch isn't worth waking the machine for; it self-heals on next boot (ADR-0001). |
+| `MultipleInstancesPolicy: IgnoreNew` | A catch-up run landing on a scheduled one won't process the queue twice at once. |
+| `LogonType: InteractiveToken` | Runs only while you're logged on, in exchange for storing no password. |
+
+Because the task uses an interactive token, "next opportunity" means next logon,
+not next boot. If the operator's machine is too often off, ADR-0001 names GitHub
+Actions cron as the documented escape hatch.
+
+### Checking on it
+
+Each run appends to `logs\dealdesk-<date>.log` (pruned after 30 days); the Daily
+Digest email remains the primary "the run happened" signal.
+
+```powershell
+Get-ScheduledTask -TaskName 'CGM DealDesk Daily Triage' | Get-ScheduledTaskInfo
+Start-ScheduledTask -TaskName 'CGM DealDesk Daily Triage'    # fire it now
+Get-Content .\logs\dealdesk-2026-07-17.log
+.\scripts\run-daily.ps1 --dry-run --no-ai --limit 1          # smoke test, no writes, no tokens
+```
+
+`LastTaskResult` is the pipeline's own exit code: `0` success, `1` an operator-facing
+error (missing credential, unset spreadsheet id), `2` a broken checkout (no venv).
 
 ### Buy Box configuration
 

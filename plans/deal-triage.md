@@ -147,9 +147,9 @@ Wrap the pipeline for hands-off operation: a single run command wired into **Win
 
 ### Acceptance criteria
 
-- [ ] A documented Task Scheduler task runs the pipeline once daily against the live Inbox.
-- [ ] Firing costs nothing while idle (no agent loop); the run is a plain script invocation.
-- [ ] A missed scheduled run (machine off/asleep) executes at the next opportunity rather than skipping the day.
+- [ ] A documented Task Scheduler task runs the pipeline once daily against the live Inbox. _(**Built, not yet installed.** `scripts/dealdesk-daily.xml` (daily trigger, `DaysInterval=1`) + `scripts/install-task.ps1` + a README "Scheduling" section; `install-task.ps1 -PrintOnly` verified live, resolving the real user/paths/start time. The wrapper was driven against the live Inbox (`run-daily.ps1 --dry-run --no-ai --limit 1` → 1 Email read, exit 0). Stays unchecked because the operator elected to register the task themselves (2026-07-17) — until it exists in Task Scheduler there is no "runs once daily" behavior to verify.)_
+- [x] Firing costs nothing while idle (no agent loop); the run is a plain script invocation. _(The action is a single `Exec`: `powershell.exe -NoProfile -NonInteractive -File run-daily.ps1` — a process that starts, works, and exits, with no resident agent between runs. Driven live: the wrapper ran the pipeline and exited, propagating the pipeline's own exit code (0 on success, 2 on failure) so Task Scheduler's `LastTaskResult` is meaningful. `test_schedule::test_action_is_a_plain_script_invocation`.)_
+- [ ] A missed scheduled run (machine off/asleep) executes at the next opportunity rather than skipping the day. _(**Encoded, not yet observed.** `StartWhenAvailable=true`, plus `DisallowStartIfOnBatteries=false` so Windows' default doesn't silently re-skip the catch-up run on a laptop; `WakeToRun=false` per ADR-0001. `test_missed_run_executes_at_next_opportunity` + `test_a_missed_run_is_not_skipped_on_battery` pin them in the template. Unchecked because observing a genuinely missed run requires the registered task — note `LogonType=InteractiveToken` makes "next opportunity" mean next **logon**, not next boot.)_
 
 ---
 

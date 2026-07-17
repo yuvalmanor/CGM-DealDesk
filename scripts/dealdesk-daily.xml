@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Windows Task Scheduler definition for the DealDesk daily triage run (Phase 7).
+
+  This is a TEMPLATE: the {{...}} placeholders are machine-specific and are
+  substituted by scripts/install-task.ps1 at registration time. Do not register
+  this file directly.
+
+  The three settings that carry the phase's guarantees:
+    StartWhenAvailable          a run missed while the machine was off/asleep
+                                fires at the next opportunity instead of being
+                                skipped for the day.
+    DisallowStartIfOnBatteries  false, or the same missed run is skipped again
+                                whenever the machine happens to be on battery.
+    WakeToRun                   false — DealDesk is a non-urgent daily batch, so
+                                it self-heals on next boot rather than waking the
+                                machine (ADR-0001).
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>CGM Ventures</Author>
+    <Description>DealDesk daily triage: extract, evaluate against the Buy Box, file each Email into a Bucket, feed calc-ready deals to the Calculator, and send the Daily Digest. Plain script invocation — no agent loop, so firing costs nothing while idle.</Description>
+    <URI>\CGM DealDesk Daily Triage</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>{{START_BOUNDARY}}</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{USER_ID}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{{SCRIPT_PATH}}"</Arguments>
+      <WorkingDirectory>{{REPO_ROOT}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
