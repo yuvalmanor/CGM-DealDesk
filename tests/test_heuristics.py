@@ -145,3 +145,25 @@ def test_low_monthly_rent_is_not_rejected_by_the_price_floor():
     # Rent's plausibility floor is far below the price/ARV floor; a real $1,200
     # rent (no comma-free k, under $10k) must still be recovered.
     assert generic_extract("Market Rent: $1,200/mo")["monthly_rent"] == 1200
+
+
+# --- shared-reader flavor-1 fixes (Phase 8 Step 1) --------------------------
+# Verbatim-real shapes. These are format gaps common enough to fix in the shared
+# reader rather than per-Source: a pipe separator (LUSH) and the "Build"
+# misspelling (ProphetHomes). Fixing them here helps every Source at once.
+
+def test_pipe_separator_price_is_recovered():
+    # LUSH: "Purchase Price | $170,000 OBO" — a colon/space-only gap stopped at |.
+    assert generic_extract("Purchase Price | $170,000 OBO")["purchase_price"] == 170000
+
+
+def test_year_build_misspelling_is_recovered():
+    # ProphetHomes: "Year Build: 1968Cash Price: $89000" (cells concatenated).
+    fields = generic_extract("Year Build: 1968Cash Price: $89000")
+    assert fields["year_built"] == 1968
+    assert fields["purchase_price"] == 89000
+
+
+def test_pipe_gap_does_not_jump_across_a_labeled_column():
+    # The pipe gap must not cross a text column into an unrelated number.
+    assert "purchase_price" not in generic_extract("Price | Beds | 5")

@@ -26,7 +26,12 @@ import re
 # scales it. Without this, "$150k" parsed as 150 and any sub-$100k k-price (e.g.
 # "$95k") was dropped entirely by the old ``{3,}`` minimum.
 _AMOUNT = r"([\d,]+(?:\.\d+)?[kK]?)"
-_GAP = r"[:\s]*\$?\s*"
+# The gap allows a colon, whitespace, or a pipe between label and value. The pipe
+# covers table/list layouts several Sources use ("Purchase Price | $170,000 OBO"
+# — LUSH), which a colon/space-only gap stopped dead at. It stays tight otherwise:
+# only these separators, never letters, so it can't jump across a labeled column
+# into an unrelated number.
+_GAP = r"[:\s|]*\$?\s*"
 _PRICE_RE = re.compile(
     r"(?:asking(?:\s+price)?|list(?:ing)?\s+price|purchase\s+price|price)\b" + _GAP + _AMOUNT,
     re.IGNORECASE,
@@ -36,7 +41,9 @@ _RENT_RE = re.compile(
     re.IGNORECASE,
 )
 _ARV_RE = re.compile(r"\barv\b" + _GAP + _AMOUNT, re.IGNORECASE)
-_YEAR_RE = re.compile(r"(?:year\s+built|yr\s+built|built)\b[^\d]{0,8}(\d{4})", re.IGNORECASE)
+# ``buil[dt]`` accepts the "Year Build" misspelling some Sources ship (ProphetHomes
+# writes "Year Build: 1968") alongside the correct "Year Built".
+_YEAR_RE = re.compile(r"(?:year\s+buil[dt]|yr\s+buil[dt]|buil[dt])\b[^\d]{0,8}(\d{4})", re.IGNORECASE)
 # Beds/baths come in two orientations. Prose is value-first ("3 bed / 2 bath");
 # the table layouts HTML Sources use are label-first ("Beds\n5"). Value-first is
 # tried first because it is the less ambiguous of the two — run label-first
