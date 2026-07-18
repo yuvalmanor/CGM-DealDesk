@@ -17,8 +17,9 @@ from dataclasses import dataclass
 
 from .ai_fallback import AiFallback
 from .buybox import BuyBox
-from .heuristics import generic_extract
-from .models import Email
+from .evaluator import evaluate
+from .heuristics import generic_extract, looks_single_property
+from .models import Email, Verdict
 from .pdf import extract_pdf_text
 
 _PDF_MIME = "application/pdf"
@@ -61,6 +62,18 @@ class ExtractionLadder:
             # fields (downstream this usually yields Needs-Human on the missing
             # gate), or nothing when heuristics found no facts. Zero token cost.
             return ExtractionResult([heuristic] if heuristic else [], used_ai=False)
+
+        # Confident-Reject short-circuit: the heuristics didn't recover every
+        # must-have (so we'd normally pay for AI), but if what they *did* recover
+        # already proves a gate fails — e.g. a price above the Buy Box ceiling —
+        # the Verdict is a Reject no matter what the AI would add. A confident no
+        # doesn't wait on more data (the same rule ``evaluate`` applies), so skip
+        # the paid call. Guarded to Emails that look single-Property: since
+        # ``generic_extract`` reads only the first listing, Rejecting a multi-
+        # listing blast on its first (out-of-range) deal would silently drop the
+        # in-range listings behind it — those still go to AI, which finds them all.
+        if looks_single_property(text) and evaluate(heuristic, self._buybox).verdict is Verdict.REJECT:
+            return ExtractionResult([heuristic], used_ai=False)
 
         # Deterministic extraction fell short — hand the whole text to the AI
         # fallback (handles unknown Sources and multi-Property Emails).

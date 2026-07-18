@@ -76,13 +76,17 @@ def generic_extract(text: str) -> dict:
     # (187 from "Price/SqFt", 100 from ad copy) without dropping real values. A
     # house price/ARV is never a bare number below $10k; a monthly rent is never
     # below $100. k-shorthand bypasses the floor — it is an explicit magnitude.
+    # The two gate fields (purchase_price, year_built) lead so the fields the
+    # Buy Box decides on are extracted first; rent/arv are calc-only. Order does
+    # not affect the returned dict, only reading.
     _put_amount(fields, "purchase_price", _PRICE_RE, text, min_plausible=10000)
-    _put_amount(fields, "monthly_rent", _RENT_RE, text, min_plausible=100)
-    _put_amount(fields, "arv", _ARV_RE, text, min_plausible=10000)
 
     year = _YEAR_RE.search(text)
     if year:
         fields["year_built"] = int(year.group(1))
+
+    _put_amount(fields, "monthly_rent", _RENT_RE, text, min_plausible=100)
+    _put_amount(fields, "arv", _ARV_RE, text, min_plausible=10000)
 
     beds = _BEDS_RE.search(text) or _BEDS_LABEL_RE.search(text)
     if beds:
@@ -108,6 +112,24 @@ def generic_extract(text: str) -> dict:
             fields["city"] = m.group(1).strip()
 
     return fields
+
+
+def looks_single_property(text: str) -> bool:
+    """A cheap multi-listing guard for the ladder's confident-Reject short-circuit.
+
+    ``generic_extract`` only ever reads the *first* listing in the text, so the
+    ladder must not let a heuristic Reject stand for a whole Email that actually
+    carries several listings — the first deal being out-of-range says nothing
+    about the ones behind it. Count the strongest per-listing markers (priced
+    amounts and plausible labeled addresses); more than one of either means the
+    Email may hold multiple Properties, so defer to the AI rung. The bias is
+    deliberately conservative: when unsure, return False (spend a token) rather
+    than risk a silent false Reject that drops in-range listings."""
+    prices = len(_PRICE_RE.findall(text))
+    addresses = sum(
+        1 for m in _ADDRESS_LABEL_RE.finditer(text) if _plausible_address(m.group(1).strip())
+    )
+    return prices <= 1 and addresses <= 1
 
 
 def _plausible_address(value: str) -> bool:

@@ -103,6 +103,40 @@ def test_no_ai_with_no_facts_yields_no_properties():
     assert result.properties == []
 
 
+def test_confident_reject_skips_ai_when_single_property():
+    # Price is above the Buy Box ceiling and the year is missing, so must-haves
+    # are incomplete — normally that pays for AI. But the recovered price alone
+    # already fails a gate, so the Verdict is a certain Reject: skip the AI call.
+    ai = _FakeAI(result=[{"should": "not be used"}])
+    ladder = ExtractionLadder(BUYBOX, ai)
+    email = _email(body="Asking Price: $400,000")
+
+    result = ladder.extract(email)
+
+    assert ai.calls == []           # confident Reject → no paid call
+    assert result.used_ai is False
+    assert result.properties[0]["purchase_price"] == 400000
+
+
+def test_multi_listing_over_range_first_still_goes_to_ai():
+    # Two listings; the first is out-of-range but the second is in-range. The
+    # heuristics only read the first, so a Reject here would silently drop the
+    # in-range listing. The multi-property guard defers the whole Email to AI.
+    ai = _FakeAI(result=[{"purchase_price": 250000, "city": "Dallas"}])
+    ladder = ExtractionLadder(BUYBOX, ai)
+    email = _email(
+        body=(
+            "Address: 1 Elm St, Dallas, TX 75201\nAsking Price: $400,000\n"
+            "Address: 2 Oak St, Dallas, TX 75202\nAsking Price: $250,000\n"
+        )
+    )
+
+    result = ladder.extract(email)
+
+    assert len(ai.calls) == 1       # guard held — not Rejected on the first deal
+    assert result.used_ai is True
+
+
 def test_empty_text_yields_no_properties_and_no_ai():
     ai = _FakeAI(result=[{"should": "not appear"}])
     ladder = ExtractionLadder(BUYBOX, ai)
