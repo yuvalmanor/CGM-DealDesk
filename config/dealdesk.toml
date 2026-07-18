@@ -79,23 +79,26 @@ model = "claude-opus-4-8"
 api_key_env = "ANTHROPIC_API_KEY"
 
 # --- Buy Box field catalog --------------------------------------------------
-# Operator-set criteria (2026-07-14): max purchase price 350k, built 1950 or
-# newer (relaxed from 1995 for a wider first live test), single-family only
-# (lots/mobile homes/condos etc. Reject), no location gate. `monthly_rent` and
-# `arv` are both feed-optional (fed even if blank, filled in the Calculator).
+# Operator-set criteria: max purchase price 350k, built 1950 or newer, no
+# location gate. `monthly_rent` and `arv` are both feed-optional (fed even if
+# blank, filled in the Calculator).
+#
+# NO property_type gate (dropped 2026-07-18): recovering property_type
+# deterministically was the sole reason the extraction ladder never short-
+# circuited — it forced an AI call on every Email (0.0% zero-token). Dropping it
+# takes must-haves down to purchase_price + year_built (both recovered by the
+# generic heuristics), lifting zero-token share to ~33% on the live inbox. The
+# trade-off is deliberate: occasional lots/condos leak into the Calculator, where
+# the price and year gates plus the operator's own review catch them, rather than
+# paying the AI to gate a type the other filters already handle. A wrong inferred
+# type would be worse (a silent, terminal Reject on a fabricated fact), so type is
+# not inferred — it is simply not gated.
 #
 # Each field carries two independent roles:
 #   filter = "gate" | "none"            (does the field gate the deal?)
 #   calc   = "feed-required" | "feed-optional" | "none"  (Calculator input?)
 # A gate field also needs an `op` (>=, <=, >, <, ==, in, not_in) and `threshold`.
 # "Must-have" extraction fields are derived from this catalog (gate + feed-required).
-
-[[buybox.fields]]
-name = "property_type"
-filter = "gate"
-op = "in"
-threshold = ["single_family"]
-calc = "none"
 
 [[buybox.fields]]
 name = "purchase_price"

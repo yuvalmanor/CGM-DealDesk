@@ -41,21 +41,20 @@ def test_gate_without_threshold_is_rejected():
 
 def test_config_loads_buybox_from_default_file():
     cfg = Config.load()
-    # Operator-set catalog: property-type + price + year gates, no location gate.
+    # Operator-set catalog: price + year gates only (property_type gate dropped
+    # 2026-07-18 so the ladder can short-circuit without an AI call), no location
+    # gate. Must-haves are down to the two deterministically-recovered fields.
     assert cfg.buybox.must_have_names() == (
-        "property_type",
         "purchase_price",
         "year_built",
     )
     assert {f.name for f in cfg.buybox.gate_fields()} == {
-        "property_type",
         "purchase_price",
         "year_built",
     }
-    ptype = next(f for f in cfg.buybox.fields if f.name == "property_type")
+    assert "property_type" not in {f.name for f in cfg.buybox.fields}
     price = next(f for f in cfg.buybox.fields if f.name == "purchase_price")
     year = next(f for f in cfg.buybox.fields if f.name == "year_built")
-    assert (ptype.op, ptype.threshold) == ("in", ["single_family"])
     assert (price.op, price.threshold) == ("<=", 350000)
     assert (year.op, year.threshold) == (">=", 1950)
     assert cfg.buybox.feed_required_names() == ("purchase_price",)

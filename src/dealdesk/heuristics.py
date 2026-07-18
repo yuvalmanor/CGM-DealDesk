@@ -14,17 +14,28 @@ from __future__ import annotations
 
 import re
 
-# Each pattern captures the value group. Kept intentionally simple and label-led;
-# real per-Source parsing is deferred to Template phases.
+# Money fields share one shape: a label, then (only) a colon/whitespace gap, an
+# optional ``$``, then the amount. The gap is deliberately *tight* — colon and
+# whitespace only, not the old ``[^\d$]{0,12}`` "anything up to 12 chars". That
+# loose gap was the root cause of three live mis-parses: it jumped ``"/SqFt: "``
+# in ``Price/SqFt: $187.63`` (→ 187) and ``") * Up to "`` in ad copy (→ 100) to
+# grab an unrelated number. Whitespace in the gap still covers table layouts
+# ("Cash Price\n\n$97,500"), because ``\s`` matches the newlines.
+#
+# The amount fragment accepts k-shorthand ("$150k" → 150000); ``_put_amount``
+# scales it. Without this, "$150k" parsed as 150 and any sub-$100k k-price (e.g.
+# "$95k") was dropped entirely by the old ``{3,}`` minimum.
+_AMOUNT = r"([\d,]+(?:\.\d+)?[kK]?)"
+_GAP = r"[:\s]*\$?\s*"
 _PRICE_RE = re.compile(
-    r"(?:asking(?:\s+price)?|list(?:ing)?\s+price|purchase\s+price|price)\b[^\d$]{0,12}\$?\s*([\d,]{3,})",
+    r"(?:asking(?:\s+price)?|list(?:ing)?\s+price|purchase\s+price|price)\b" + _GAP + _AMOUNT,
     re.IGNORECASE,
 )
 _RENT_RE = re.compile(
-    r"(?:market\s+rent|estimated\s+rent|est\.?\s+rent|monthly\s+rent|rent)\b[^\d$]{0,12}\$?\s*([\d,]{3,})",
+    r"(?:market\s+rent|estimated\s+rent|est\.?\s+rent|monthly\s+rent|rent)\b" + _GAP + _AMOUNT,
     re.IGNORECASE,
 )
-_ARV_RE = re.compile(r"\barv\b[^\d$]{0,12}\$?\s*([\d,]{3,})", re.IGNORECASE)
+_ARV_RE = re.compile(r"\barv\b" + _GAP + _AMOUNT, re.IGNORECASE)
 _YEAR_RE = re.compile(r"(?:year\s+built|yr\s+built|built)\b[^\d]{0,8}(\d{4})", re.IGNORECASE)
 # Beds/baths come in two orientations. Prose is value-first ("3 bed / 2 bath");
 # the table layouts HTML Sources use are label-first ("Beds\n5"). Value-first is
@@ -54,9 +65,13 @@ _CITY_FROM_ADDR_RE = re.compile(r",\s*([A-Za-z .'\-]+?)\s*,?\s*(?:TX|Texas)\b", 
 
 def generic_extract(text: str) -> dict:
     fields: dict[str, object] = {}
-    _put_number(fields, "purchase_price", _PRICE_RE, text)
-    _put_number(fields, "monthly_rent", _RENT_RE, text)
-    _put_number(fields, "arv", _ARV_RE, text)
+    # Plausibility floors reject the small-int junk the label match can still grab
+    # (187 from "Price/SqFt", 100 from ad copy) without dropping real values. A
+    # house price/ARV is never a bare number below $10k; a monthly rent is never
+    # below $100. k-shorthand bypasses the floor — it is an explicit magnitude.
+    _put_amount(fields, "purchase_price", _PRICE_RE, text, min_plausible=10000)
+    _put_amount(fields, "monthly_rent", _RENT_RE, text, min_plausible=100)
+    _put_amount(fields, "arv", _ARV_RE, text, min_plausible=10000)
 
     year = _YEAR_RE.search(text)
     if year:
@@ -92,7 +107,21 @@ def _plausible_address(value: str) -> bool:
     return bool(value) and len(value) <= _ADDRESS_MAX_LEN and _DIGIT_RE.search(value) is not None
 
 
-def _put_number(fields: dict, key: str, pattern: re.Pattern, text: str) -> None:
+def _put_amount(
+    fields: dict, key: str, pattern: re.Pattern, text: str, *, min_plausible: float
+) -> None:
     match = pattern.search(text)
-    if match:
-        fields[key] = int(match.group(1).replace(",", ""))
+    if not match:
+        return
+    raw = match.group(1)
+    is_k = raw[-1] in "kK"
+    norm = raw.replace(",", "")[:-1] if is_k else raw.replace(",", "")
+    try:
+        val = float(norm) * 1000 if is_k else float(norm)
+    except ValueError:
+        return
+    # A bare number below the floor is junk (a price-per-sqft or ad figure caught
+    # by the label); k-shorthand is explicit, so it is trusted as-is.
+    if not is_k and val < min_plausible:
+        return
+    fields[key] = int(val) if val.is_integer() else val

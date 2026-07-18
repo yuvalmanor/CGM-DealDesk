@@ -84,7 +84,14 @@ class AnthropicFallback:
                         "For `property_type`, classify into one of the schema's allowed "
                         "values (a house is `single_family`; a vacant/build-ready/"
                         "commercial lot is `vacant_lot`, `land`, or `commercial`); "
-                        "omit it if genuinely unclear.\n\n"
+                        "omit it if genuinely unclear.\n"
+                        "For money fields, report the current asking figure for THIS "
+                        "property: when a reduced price is shown (e.g. '$283k $263k'), "
+                        "use the lower, most-recent one; never use a sold-comparable, an "
+                        "estimated after-repair value, or a price-per-square-foot figure "
+                        "as `purchase_price`. If a rent is given as a range, use the "
+                        "higher figure. If two genuinely conflicting prices appear with no "
+                        "way to tell which is current, omit `purchase_price`.\n\n"
                         f"{text}"
                     ),
                 }

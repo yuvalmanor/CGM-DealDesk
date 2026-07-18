@@ -98,3 +98,50 @@ def test_value_first_prose_still_wins_over_the_label_first_reading():
 
 def test_a_count_is_never_the_tail_of_a_larger_number():
     assert "beds" not in generic_extract("Sales Price $279,990 and no bedroom count given")
+
+
+# --- money-field precision --------------------------------------------------
+# Verbatim-real shapes from the 2026-07-17 spike. The loose label→number gap and
+# the missing k-shorthand handling made these mis-parse in production; the AI
+# re-extract masked it, so a Reject short-circuit would have silently killed real
+# deals on a fabricated price. These pin the fix.
+
+def test_k_shorthand_price_is_scaled():
+    # "$150k" must be 150000, not 150 (southernhills / lotus).
+    assert generic_extract("The Numbers Price: $150k")["purchase_price"] == 150000
+
+
+def test_sub_100k_k_shorthand_is_not_dropped():
+    # The old {3,} minimum dropped "$95k" entirely (only 2 digits before the k).
+    assert generic_extract("Asking Price: $95k")["purchase_price"] == 95000
+
+
+def test_price_per_sqft_is_not_read_as_the_price():
+    # "Price/SqFt: $187.63" → the loose gap grabbed 187 (Fazio, ~64 emails).
+    assert "purchase_price" not in generic_extract("Price/SqFt: $187.63")
+
+
+def test_ad_copy_number_is_not_read_as_the_price():
+    # "purchase price) * Up to 100% construction holdback" → grabbed 100 (lender ad).
+    assert "purchase_price" not in generic_extract(
+        "purchase price) * Up to 100% construction holdback"
+    )
+
+
+def test_sold_comp_is_not_read_as_the_price():
+    # "Sold For:" carries no price label, so no purchase_price is emitted.
+    assert "purchase_price" not in generic_extract("Sold For: $339,243")
+
+
+def test_real_comma_price_still_parses():
+    assert generic_extract("Asking Price: $250,000")["purchase_price"] == 250000
+
+
+def test_arv_k_shorthand_is_scaled():
+    assert generic_extract("ARV: $320k")["arv"] == 320000
+
+
+def test_low_monthly_rent_is_not_rejected_by_the_price_floor():
+    # Rent's plausibility floor is far below the price/ARV floor; a real $1,200
+    # rent (no comma-free k, under $10k) must still be recovered.
+    assert generic_extract("Market Rent: $1,200/mo")["monthly_rent"] == 1200
