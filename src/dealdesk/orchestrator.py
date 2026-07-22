@@ -55,6 +55,7 @@ class EmailResult:
     bucket: Bucket
     properties: list[tuple[dict, Evaluation]] = field(default_factory=list)
     used_ai: bool = False
+    ai_missing_fields: tuple[str, ...] = ()
     error: str | None = None
     subject: str = ""
     sender: str = ""
@@ -175,10 +176,11 @@ class Orchestrator:
                 )
 
             if not self._dry_run:
-                if rows:
+                if rows and self._sheets is not None:
                     self._sheets.upsert_rows(rows)
-                for row_id, deal_input in feeds:
-                    self._calculator.upsert_deal(row_id, deal_input)
+                if self._calculator is not None:
+                    for row_id, deal_input in feeds:
+                        self._calculator.upsert_deal(row_id, deal_input)
                 # Label LAST — an Email is "done" only once it carries a Bucket.
                 # Strip any stale ``Error`` label: a retry that now succeeds must
                 # end carrying exactly one (terminal) Bucket.
@@ -197,6 +199,7 @@ class Orchestrator:
                 bucket,
                 list(zip(properties, evaluations)),
                 used_ai=extraction.used_ai,
+                ai_missing_fields=extraction.ai_missing_fields,
                 subject=email.subject,
                 sender=email.from_addr,
                 deals_fed=len(feeds),

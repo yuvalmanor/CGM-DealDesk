@@ -91,7 +91,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     sheets = None
     calculator = None
-    if not args.dry_run:
+    if not args.dry_run and not args.no_sheets:
         if not config.triage_spreadsheet_id:
             raise RuntimeError("triage.spreadsheet_id is not set; the Triage Log has nowhere to write.")
         if not config.calc_spreadsheet_id:
@@ -102,16 +102,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
         sheets = SheetsGateway(sheets_service, config.triage_spreadsheet_id, config.triage_tab)
         calculator = CalculatorGateway(sheets_service, config.calc_spreadsheet_id, config.calc_tab)
 
+    # --no-notify suppresses Deal Notifications + Daily Digest by withholding the
+    # recipient (the orchestrator already skips both when there is no `to`).
+    notify_to = "" if args.no_notify else config.notify_to
+
     mode = "DRY RUN — no writes or labels" if args.dry_run else "live — writes Triage Log, feeds Calculator, applies labels"
+    if not args.dry_run and args.no_sheets:
+        mode = "live labels only — applies labels, NO sheet writes (Triage Log + Calculator skipped)"
+    if not args.dry_run and args.no_notify:
+        mode += " · notifications DISABLED"
     if args.no_ai:
         mode += " · AI fallback DISABLED (heuristics only)"
     print(f"Inbox:  {config.inbox_address}")
     print(f"Cutoff: {cutoff:%Y-%m-%d}  ({mode})")
     print()
 
-    if not args.dry_run and not config.notify_to:
+    if not args.dry_run and not notify_to:
         print(
-            "warning: notify.to is not set; no Deal Notifications or Daily Digest will be sent.",
+            "warning: no Deal Notifications or Daily Digest will be sent "
+            "(notify.to unset or --no-notify).",
             file=sys.stderr,
         )
 
@@ -123,7 +132,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         calculator=calculator,
         assumptions=config.assumptions,
-        notify_to=config.notify_to,
+        notify_to=notify_to,
         notify_from=config.notify_from,
         notify_label=config.notify_label,
         calc_link=config.calc_link,
@@ -145,9 +154,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     ai_used = sum(1 for r in results if r.used_ai)
     print(f"AI fallback used: {ai_used} of {len(results)} emails")
+    if ai.calls:
+        print(
+            f"AI tokens: {ai.input_tokens:,} in + {ai.output_tokens:,} out "
+            f"over {ai.calls} call(s) [{config.ai_model}]"
+        )
 
     deals_fed = sum(r.deals_fed for r in results)
-    fed_verb = "would feed" if args.dry_run else "fed"
+    fed_verb = "would feed" if (args.dry_run or args.no_sheets) else "fed"
     print(f"Calculator: {fed_verb} {deals_fed} calc-ready deal(s) to {config.calc_tab}")
 
     resends = sum(r.resends for r in results)
@@ -157,11 +171,77 @@ def _cmd_run(args: argparse.Namespace) -> int:
     notified = sum(r.notified for r in results)
     if args.dry_run:
         print(f"Notifications: would send {notified} Deal Notification(s) + 1 Daily Digest")
-    elif config.notify_to:
-        print(f"Notifications: sent {notified} Deal Notification(s) + 1 Daily Digest to {config.notify_to}")
+    elif notify_to:
+        print(f"Notifications: sent {notified} Deal Notification(s) + 1 Daily Digest to {notify_to}")
     else:
-        print("Notifications: skipped (notify.to not set)")
+        print("Notifications: skipped (--no-notify or notify.to not set)")
+
+    if args.report:
+        _write_report(args.report, results, ai, config)
+        print(f"Report written: {args.report}")
     return 0
+
+
+def _write_report(path: str, results, ai, config) -> None:
+    """Serialize the run to JSON for downstream tooling (the batch-triage skill).
+    Carries everything the deterministic-metrics report needs so the consumer
+    never has to re-parse human-facing text: per-email bucket + AI flag + the
+    exact fallback trigger (missing must-haves), per-Property verdicts/reasons,
+    and token totals for costing."""
+    import json
+    from collections import Counter
+
+    counts = Counter(r.bucket.value for r in results)
+
+    ai_by_bucket: dict[str, dict[str, int]] = {}
+    for r in results:
+        slot = ai_by_bucket.setdefault(r.bucket.value, {"total": 0, "ai": 0})
+        slot["total"] += 1
+        if r.used_ai:
+            slot["ai"] += 1
+
+    # Rank *why* the fallback fired: the set of must-haves the heuristics missed.
+    fallback_reasons: Counter[str] = Counter()
+    for r in results:
+        if r.used_ai:
+            key = " + ".join(r.ai_missing_fields) if r.ai_missing_fields else "unknown"
+            fallback_reasons[key] += 1
+
+    emails = [
+        {
+            "bucket": r.bucket.value,
+            "used_ai": r.used_ai,
+            "ai_missing_fields": list(r.ai_missing_fields),
+            "sender": _fmt_sender(r.sender),
+            "subject": r.subject or "",
+            "error": r.error,
+            "properties": [
+                {
+                    "address": str(fields.get("address", "")) or None,
+                    "verdict": ev.verdict.value,
+                    "calc_ready": ev.calc_ready,
+                    "fed": should_feed(ev),
+                    "reasons": list(ev.reasons),
+                }
+                for fields, ev in r.properties
+            ],
+        }
+        for r in results
+    ]
+
+    report = {
+        "model": config.ai_model,
+        "emails_processed": len(results),
+        "counts": dict(counts),
+        "ai_used": sum(1 for r in results if r.used_ai),
+        "ai_calls": ai.calls,
+        "ai_tokens": {"input": ai.input_tokens, "output": ai.output_tokens},
+        "ai_by_bucket": ai_by_bucket,
+        "fallback_reasons": dict(fallback_reasons.most_common()),
+        "emails": emails,
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2, ensure_ascii=False)
 
 
 def _print_verbose(results) -> None:
@@ -237,6 +317,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-ai",
         action="store_true",
         help="Disable the AI fallback (heuristics only) — zero token cost for scouting a large batch",
+    )
+    run.add_argument(
+        "--no-sheets",
+        action="store_true",
+        help="Live run that applies labels but skips ALL sheet writes (Triage Log + Calculator). "
+        "Warning: labeled Emails are marked processed with no record, so a later full run skips them.",
+    )
+    run.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="Suppress Deal Notifications and the Daily Digest on a live run",
+    )
+    run.add_argument(
+        "--report",
+        default=None,
+        metavar="PATH",
+        help="Write a structured JSON report of the run (per-email verdicts, AI usage, "
+        "fallback trigger reasons, token totals) to PATH — for tooling and skills",
     )
     run.set_defaults(func=_cmd_run)
     return parser

@@ -103,15 +103,24 @@ api_key_env = "ANTHROPIC_API_KEY"
 [[buybox.fields]]
 name = "purchase_price"
 filter = "gate"
-op = "<="
-threshold = 350000
+op = ">="
+threshold = 150000
 calc = "feed-required"
+
+# Two-sided price gate: 150k floor (above) + 300k ceiling (here). Only the floor
+# entry carries the feed-required calc role so purchase_price feeds exactly once.
+[[buybox.fields]]
+name = "purchase_price"
+filter = "gate"
+op = "<="
+threshold = 300000
+calc = "none"
 
 [[buybox.fields]]
 name = "year_built"
 filter = "gate"
 op = ">="
-threshold = 1950
+threshold = 2000
 calc = "none"
 
 [[buybox.fields]]

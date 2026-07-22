@@ -29,10 +29,13 @@ _PDF_MIME = "application/pdf"
 class ExtractionResult:
     """The Properties extracted from an Email, plus which rung produced them.
     ``used_ai`` is True whenever the AI fallback was invoked — even if it found
-    no Property — so callers can report (and cost-monitor) the fallback."""
+    no Property — so callers can report (and cost-monitor) the fallback.
+    ``ai_missing_fields`` records *why* the fallback fired: the must-have fields
+    the heuristics failed to recover (empty when the fallback didn't fire)."""
 
     properties: list[dict]
     used_ai: bool
+    ai_missing_fields: tuple[str, ...] = ()
 
 
 class ExtractionLadder:
@@ -76,8 +79,16 @@ class ExtractionLadder:
             return ExtractionResult([heuristic], used_ai=False)
 
         # Deterministic extraction fell short — hand the whole text to the AI
-        # fallback (handles unknown Sources and multi-Property Emails).
-        return ExtractionResult(self._ai.extract_properties(text), used_ai=True)
+        # fallback (handles unknown Sources and multi-Property Emails). Record the
+        # must-haves the heuristics missed: this is the precise trigger reason, so
+        # a batch report can rank *why* the fallback is firing.
+        missing = tuple(
+            name for name in self._buybox.must_have_names()
+            if heuristic.get(name) in (None, "")
+        )
+        return ExtractionResult(
+            self._ai.extract_properties(text), used_ai=True, ai_missing_fields=missing
+        )
 
     def _gather_text(self, email: Email) -> str:
         parts = [email.subject or "", email.body_text or ""]

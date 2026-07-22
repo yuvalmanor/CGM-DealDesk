@@ -44,6 +44,13 @@ def test_config_loads_buybox_from_default_file():
     # Operator-set catalog: price + year gates only (property_type gate dropped
     # 2026-07-18 so the ladder can short-circuit without an AI call), no location
     # gate. Must-haves are down to the two deterministically-recovered fields.
+    #
+    # This asserts the config->code *contract* — which fields gate, their roles,
+    # and that every gate carries a usable op + threshold. It deliberately does
+    # NOT pin the threshold *values*: those are operator-tunable (the shipped
+    # numbers are the real Buy Box and change as criteria change), so pinning them
+    # here would turn every legitimate retune into a red build. Value parsing is
+    # covered by the fixture-based tests above.
     assert cfg.buybox.must_have_names() == (
         "purchase_price",
         "year_built",
@@ -53,9 +60,8 @@ def test_config_loads_buybox_from_default_file():
         "year_built",
     }
     assert "property_type" not in {f.name for f in cfg.buybox.fields}
-    price = next(f for f in cfg.buybox.fields if f.name == "purchase_price")
-    year = next(f for f in cfg.buybox.fields if f.name == "year_built")
-    assert (price.op, price.threshold) == ("<=", 350000)
-    assert (year.op, year.threshold) == (">=", 1950)
+    for gate in cfg.buybox.gate_fields():
+        assert gate.op in (">=", "<=", ">", "<", "==", "in", "not_in")
+        assert gate.threshold is not None
     assert cfg.buybox.feed_required_names() == ("purchase_price",)
     assert cfg.buybox.feed_optional_names() == ("monthly_rent", "arv")

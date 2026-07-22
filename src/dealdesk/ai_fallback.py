@@ -61,6 +61,12 @@ class AnthropicFallback:
     def __init__(self, model: str, api_key: str | None = None):
         self._model = model
         self._api_key = api_key
+        # Token accounting: accumulated across every fallback call this run so the
+        # CLI can report usage (and the operator can cost it). Zero when the
+        # fallback never fires.
+        self.calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
 
     def extract_properties(self, text: str) -> list[dict]:
         import anthropic  # lazy: only needed when the fallback actually fires
@@ -97,6 +103,12 @@ class AnthropicFallback:
                 }
             ],
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.input_tokens += getattr(usage, "input_tokens", 0) or 0
+            self.output_tokens += getattr(usage, "output_tokens", 0) or 0
+        self.calls += 1
+
         import json
 
         payload = next((b.text for b in response.content if b.type == "text"), "")
