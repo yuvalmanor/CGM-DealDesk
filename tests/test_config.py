@@ -65,15 +65,21 @@ def test_calc_enabled_defaults_true_and_parses():
     assert cfg.calc_enabled is False
 
 
-def test_shipped_config_keeps_effects_inside_the_deals_mailbox():
-    """The two exceptions the operator set on 2026-08-01 while the pipeline is
-    reworked: no Calculator insertion, and no email leaving the deals mailbox.
-    The rest of the pipeline runs normally. Pinned so neither is restored by
-    accident — reversing one is a deliberate edit here plus the config."""
+def test_shipped_config_runs_the_full_pipeline():
+    """The full pipeline is restored (2026-08-02): the Calculator feed is back on
+    after the 2026-08-01 rework window, during which it was off along with the
+    external notification CC.
+
+    Pinned the same way the paused state was — the shipped config's outward
+    effects are asserted here, so switching one off (or on) is a deliberate edit
+    in two places rather than a silent drift. What guards the feed now is not the
+    kill switch but the routing rule: only a Verdict Pass is written."""
     cfg = Config.load()
-    assert cfg.calc_enabled is False        # no DEALS_APP row is written
-    assert cfg.notify_deal_cc == ""         # no external CC recipient
-    # Notifications are send-to-self: everything stays in the deals mailbox.
+    assert cfg.calc_enabled is True         # DEALS_APP rows are written again
+    assert cfg.calc_spreadsheet_id          # ...and there is somewhere to write them
+    assert cfg.notify_deal_cc               # Deal Notifications reach an outside inbox
+    # Notifications still originate from and land in the deals mailbox; deal_cc is
+    # the one recipient outside it.
     assert cfg.notify_to == cfg.inbox_address
     assert cfg.notify_from == cfg.inbox_address
 

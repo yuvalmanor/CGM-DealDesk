@@ -44,14 +44,20 @@ spreadsheet_id = "1KxArNSlh-g0vpj4TkXrEs2X6TS45CE_VHWFO6tXf3_M"
 tab = "DEALS_TRIAGE"
 
 [calculator]
-# KILL SWITCH for the downstream Calculator feed. OFF since 2026-08-01 at the
-# operator's instruction: DealDesk no longer inserts deals into DEALS_APP while
-# the triage pipeline and the Buy Box guidelines are being reworked. Everything
-# upstream still runs (extract -> evaluate -> Triage Log -> label -> notify), so
-# qualifying deals still reach the operator by Email and the Triage Log — they
-# are just entered into the Calculator by hand. The sink wiring below is left
-# intact; flip this back to true to resume feeding.
-enabled = false
+# KILL SWITCH for the downstream Calculator feed. Back ON since 2026-08-02 at the
+# operator's instruction: the rework is done, so DealDesk resumes inserting deals
+# into DEALS_APP. It was off from 2026-08-01 while the triage pipeline and the Buy
+# Box guidelines were reworked.
+#
+# What changed while it was off: the feed is now **Pass only** — a Needs-Human
+# Property is no longer written (see `deal_input._FEEDABLE_VERDICTS`). That is the
+# whole point of turning it back on now: the reason it went off was deals reaching
+# the Calculator that no gate had ever cleared.
+#
+# Set to false to stop the feed again. Gated in `Orchestrator._can_feed`, so with
+# it off no Deal is built and no feed_row_id is minted — a Triage row never claims
+# a DEALS_APP link that was never written.
+enabled = true
 
 # Downstream sink: the Calculator's DEALS_APP tab (ADR-0002). Same spreadsheet as
 # the Triage Log here (the Calculator's GOOGLE_SHEET_ID), but its own tab, its own
@@ -82,11 +88,13 @@ label = "Deal Notifications"
 # deal), on top of the send-to-self `to` above. The Daily Digest is NOT sent
 # here. Leave empty to disable. Set to fan qualifying deals to an external inbox.
 #
-# OFF since 2026-08-01 at the operator's instruction: notifications stay inside
-# the deals mailbox and are not fanned out to an external address. `to`/`from`
-# above are both deals@cgm-ventures.com, so with this empty nothing DealDesk
-# sends leaves that mailbox. Restore the address here to resume the CC.
-deal_cc = ""
+# Restored 2026-08-02 at the operator's instruction, ending the 2026-08-01 window
+# in which this was empty and nothing DealDesk sent left the deals mailbox. This
+# is the ONLY recipient outside that mailbox — `to`/`from` above are both
+# deals@cgm-ventures.com — so clearing it again is what makes the pipeline
+# self-contained. Only Deal Notifications (a Passed-BuyBox deal) are CC'd here;
+# the Daily Digest never was.
+deal_cc = "yuval.cgm@gmail.com"
 
 [ai]
 # Last-resort extraction fallback (Anthropic), used only when the deterministic

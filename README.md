@@ -136,22 +136,28 @@ the first live week showed each firing in production):
   for. The Triage row is always written (rows are never merged), and the run
   summary reports how many writes were skipped.
 
-### Current operating mode (set 2026-08-01)
+### Current operating mode (full pipeline, restored 2026-08-02)
 
-The pipeline runs **normally and on schedule** — twice-daily unattended triage,
-Triage Log writes, and Gmail labels all as designed — with two deliberate
-exceptions that keep every effect **inside the deals mailbox** while the pipeline
-and Buy Box guidelines are reworked:
+**Everything is on.** Twice-daily unattended triage (07:00 + 20:00), AI fallback,
+Triage Log writes, Gmail bucket labels, Deal Notifications + Daily Digest, and
+Calculator insertion into `DEALS_APP`.
 
-| Exception | Switch | Effect |
+| Effect | Switch | State |
 |---|---|---|
-| No Calculator insertion | `[calculator] enabled = false` | No `DEALS_APP` row is written, and no Triage row carries a `deals_app_row_id` — the log never claims a link that doesn't exist. Qualifying deals are entered into the Calculator by hand. |
-| No external email | `[notify] deal_cc = ""` | Deal Notifications are no longer CC'd to an outside address. `to` and `from` are both `deals@cgm-ventures.com`, so nothing DealDesk sends leaves that mailbox. |
+| Calculator insertion | `[calculator] enabled` | **on** — a calc-ready **Pass** is written to `DEALS_APP` and its Triage row carries the `deals_app_row_id` link |
+| External notification CC | `[notify] deal_cc` | **on** — Deal Notifications are CC'd to `yuval.cgm@gmail.com`, the one recipient outside the deals mailbox (the Digest is not CC'd) |
+| Unattended schedule | Task `CGM DealDesk Daily Triage` | **Ready** — two daily triggers |
 
-Everything else is untouched: Emails are still extracted, evaluated, logged,
-bucket-labeled, and notified (send-to-self), so the triage record stays complete.
-Reverse either exception independently — set `enabled = true`, or put the address
-back in `deal_cc`.
+Both switches were off from **2026-08-01** while the pipeline and Buy Box
+guidelines were reworked; during that window every effect stayed inside the deals
+mailbox and qualifying deals were entered into the Calculator by hand. They are
+independent, and each is reversed by a deliberate edit to the config *and* to
+`test_shipped_config_runs_the_full_pipeline` in `tests/test_config.py`, which
+pins the shipped config's outward effects so neither drifts silently.
+
+What changed in that window is why the feed is safe to run again: it is now
+**Pass only**. A `Needs-Human` Property is no longer written, so the Calculator
+can't fill with deals no gate ever cleared.
 
 | Flag | Effect |
 |---|---|
