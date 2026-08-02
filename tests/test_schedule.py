@@ -2,7 +2,7 @@
 
 Windows, not Python, executes this task, so the XML *is* the deliverable — the
 only way its guarantees survive an edit is to assert on them here. Each test
-pins one of the phase's promises: fires once a day, is a plain script
+pins one of the phase's promises: fires twice a day, is a plain script
 invocation (no agent loop, so idling is free), and a missed run is picked up
 rather than skipped.
 """
@@ -34,11 +34,17 @@ def _setting(task: ET.Element, name: str) -> str:
     return (el.text or "").strip()
 
 
-def test_fires_once_a_day(task: ET.Element) -> None:
+def test_fires_twice_a_day(task: ET.Element) -> None:
+    # Two independent once-a-day triggers (default 07:00 and 20:00). Each must be a
+    # plain daily schedule; a third would be an unintended extra run.
     triggers = task.findall("t:Triggers/t:CalendarTrigger", NS)
-    assert len(triggers) == 1, "exactly one daily trigger — a second would double-run"
-    assert triggers[0].findtext("t:ScheduleByDay/t:DaysInterval", namespaces=NS) == "1"
-    assert triggers[0].findtext("t:Enabled", namespaces=NS) == "true"
+    assert len(triggers) == 2, "exactly two daily triggers — the twice-daily schedule"
+    for trigger in triggers:
+        assert trigger.findtext("t:ScheduleByDay/t:DaysInterval", namespaces=NS) == "1"
+        assert trigger.findtext("t:Enabled", namespaces=NS) == "true"
+    # The two triggers must fire at different times, or they'd be one run duplicated.
+    boundaries = [t.findtext("t:StartBoundary", namespaces=NS) for t in triggers]
+    assert len(set(boundaries)) == 2, "the two triggers must have distinct start times"
     assert _setting(task, "Enabled") == "true"
 
 

@@ -26,6 +26,7 @@ _ADDRESS_COL_INDEX = HEADER.index("address")
 _VERDICT_COL_INDEX = HEADER.index("verdict")
 _FACTS_COL_INDEX = HEADER.index("facts_json")
 _RECEIVED_COL_INDEX = HEADER.index("received_date")
+_DEALS_APP_ID_COL_INDEX = HEADER.index("deals_app_row_id")
 
 
 class SheetsGateway:
@@ -90,6 +91,7 @@ class SheetsGateway:
                     verdict=_at(cells, _VERDICT_COL_INDEX),
                     price=_price_of(_at(cells, _FACTS_COL_INDEX)),
                     received_date=_at(cells, _RECEIVED_COL_INDEX),
+                    deals_app_row_id=_at(cells, _DEALS_APP_ID_COL_INDEX),
                 )
             )
         return priors

@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
+from .address import address_label
 from .evaluator import Evaluation
 from .models import Bucket, Verdict
 from .source import derive_source
@@ -54,10 +55,16 @@ def build_deal_notification(
     source: str,
     calc_link: str,
     resend_flag: str = "",
+    email_subject: str = "",
+    email_sender: str = "",
 ) -> Notification:
     """Per-deal notification for a ``Passed-BuyBox`` Property. Everything the
-    operator needs to judge it without opening anything else."""
-    address = _text(fields.get("address")) or "(address unknown)"
+    operator needs to judge it without opening anything else.
+
+    ``email_subject``/``email_sender`` name the Email the Property came from; with
+    no extracted address they stand in for it (``"<subject>|<sender>"``), so the
+    subject line still identifies the deal well enough to search Gmail for."""
+    address = address_label(fields.get("address"), email_subject, email_sender) or "(address unknown)"
     subject = f"Deal: {address} — {source}"
 
     lines = [
@@ -113,7 +120,10 @@ def _digest_lines(result: "EmailResult", bucket: Bucket) -> list[str]:
 
     lines: list[str] = []
     for fields, ev in result.properties:
-        address = _text(fields.get("address")) or "(address unknown)"
+        address = (
+            address_label(fields.get("address"), result.subject, result.sender)
+            or "(address unknown)"
+        )
         if ev.verdict is Verdict.NEEDS_HUMAN:
             missing = ", ".join(ev.missing_fields) or "(unknown)"
             lines.append(f"  - {address} ({source}) — missing {missing}")

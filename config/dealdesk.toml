@@ -12,7 +12,7 @@ address = "deals@cgm-ventures.com"
 # backlog is left untouched. An explicit `cutoff` date wins. Move it back
 # deliberately to sweep older backlog. If `cutoff` is omitted, the cutoff is
 # computed as (today - lookback_days).
-cutoff = "2026-06-28"
+cutoff = "2026-07-13"
 lookback_days = 14
 
 [buckets]
@@ -44,6 +44,15 @@ spreadsheet_id = "1KxArNSlh-g0vpj4TkXrEs2X6TS45CE_VHWFO6tXf3_M"
 tab = "DEALS_TRIAGE"
 
 [calculator]
+# KILL SWITCH for the downstream Calculator feed. OFF since 2026-08-01 at the
+# operator's instruction: DealDesk no longer inserts deals into DEALS_APP while
+# the triage pipeline and the Buy Box guidelines are being reworked. Everything
+# upstream still runs (extract -> evaluate -> Triage Log -> label -> notify), so
+# qualifying deals still reach the operator by Email and the Triage Log — they
+# are just entered into the Calculator by hand. The sink wiring below is left
+# intact; flip this back to true to resume feeding.
+enabled = false
+
 # Downstream sink: the Calculator's DEALS_APP tab (ADR-0002). Same spreadsheet as
 # the Triage Log here (the Calculator's GOOGLE_SHEET_ID), but its own tab, its own
 # id key, and its own schema (owned by brrrr-calculator). DealDesk writes a
@@ -69,6 +78,15 @@ refi_ltv = 65
 to = "deals@cgm-ventures.com"
 from = "deals@cgm-ventures.com"
 label = "Deal Notifications"
+# Extra recipient CC'd on every per-Property Deal Notification (a Passed-BuyBox
+# deal), on top of the send-to-self `to` above. The Daily Digest is NOT sent
+# here. Leave empty to disable. Set to fan qualifying deals to an external inbox.
+#
+# OFF since 2026-08-01 at the operator's instruction: notifications stay inside
+# the deals mailbox and are not fanned out to an external address. `to`/`from`
+# above are both deals@cgm-ventures.com, so with this empty nothing DealDesk
+# sends leaves that mailbox. Restore the address here to resume the CC.
+deal_cc = ""
 
 [ai]
 # Last-resort extraction fallback (Anthropic), used only when the deterministic
@@ -130,5 +148,14 @@ calc = "feed-optional"
 
 [[buybox.fields]]
 name = "arv"
+filter = "none"
+calc = "feed-optional"
+
+# Building area. Feed-optional, never a gate and never feed-required — making it
+# either would add it to the must-haves and force an AI call on every Email that
+# omits it (the mistake the property_type gate made). Recovered by the generic
+# heuristics from ~55% of live deal Emails; absent ones feed the 0 sentinel.
+[[buybox.fields]]
+name = "sqft"
 filter = "none"
 calc = "feed-optional"

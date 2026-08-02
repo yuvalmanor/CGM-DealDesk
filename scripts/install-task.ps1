@@ -17,7 +17,8 @@
     Name to register under. Default 'CGM DealDesk Daily Triage'.
 
 .PARAMETER At
-    Local time of day to run, HH:mm. Default 07:00.
+    The two local times of day to run, each HH:mm. Default 07:00 and 20:00. The
+    task template has exactly two daily triggers, so pass exactly two times.
 
 .PARAMETER Force
     Replace the task if it already exists.
@@ -26,9 +27,15 @@
     Print the resolved XML and register nothing. Use this to review exactly what
     would be installed.
 
+.PARAMETER ReenableDisabled
+    Required to replace a task that is currently DISABLED. A task is disabled
+    only because someone deliberately paused the unattended runs, but -Force
+    unregisters it and registers a fresh ENABLED one — silently restarting them.
+    This switch makes restarting a decision rather than a side effect.
+
 .EXAMPLE
-    .\scripts\install-task.ps1 -At 06:30
-    Register the daily run for 06:30 local.
+    .\scripts\install-task.ps1 -At 06:30,19:30
+    Register the two daily runs for 06:30 and 19:30 local.
 
 .EXAMPLE
     .\scripts\install-task.ps1 -PrintOnly
@@ -37,10 +44,12 @@
 [CmdletBinding()]
 param(
     [string] $TaskName = 'CGM DealDesk Daily Triage',
+    [ValidateCount(2, 2)]
     [ValidatePattern('^\d{2}:\d{2}$')]
-    [string] $At = '07:00',
+    [string[]] $At = @('07:00', '20:00'),
     [switch] $Force,
-    [switch] $PrintOnly
+    [switch] $PrintOnly,
+    [switch] $ReenableDisabled
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,12 +62,17 @@ foreach ($required in @($template, $runScript)) {
     if (-not (Test-Path $required)) { throw "Missing $required — is this checkout complete?" }
 }
 
-$time = [datetime]::ParseExact($At, 'HH:mm', [cultureinfo]::InvariantCulture)
-# StartBoundary's date is just the schedule's anchor; DaysInterval=1 repeats it daily.
-$startBoundary = (Get-Date -Hour $time.Hour -Minute $time.Minute -Second 0).ToString('yyyy-MM-ddTHH:mm:ss')
+# StartBoundary's date is just each trigger's anchor; DaysInterval=1 repeats it daily.
+function Resolve-StartBoundary([string] $hhmm) {
+    $t = [datetime]::ParseExact($hhmm, 'HH:mm', [cultureinfo]::InvariantCulture)
+    return (Get-Date -Hour $t.Hour -Minute $t.Minute -Second 0).ToString('yyyy-MM-ddTHH:mm:ss')
+}
+$startBoundary1 = Resolve-StartBoundary $At[0]
+$startBoundary2 = Resolve-StartBoundary $At[1]
 
 $xml = (Get-Content -Raw -Path $template).
-    Replace('{{START_BOUNDARY}}', $startBoundary).
+    Replace('{{START_BOUNDARY_1}}', $startBoundary1).
+    Replace('{{START_BOUNDARY_2}}', $startBoundary2).
     Replace('{{USER_ID}}', "$env:USERDOMAIN\$env:USERNAME").
     Replace('{{SCRIPT_PATH}}', $runScript).
     Replace('{{REPO_ROOT}}', $repoRoot)
@@ -78,13 +92,26 @@ if ($existing) {
     if (-not $Force) {
         throw "Task '$TaskName' already exists. Re-run with -Force to replace it."
     }
+    # Replacing = unregister + register, and the fresh task comes back ENABLED.
+    # If the operator had stopped the automation, that would restart it silently.
+    if ($existing.State -eq 'Disabled' -and -not $ReenableDisabled) {
+        throw "Task '$TaskName' exists but is DISABLED — someone paused the unattended runs. Replacing it would re-enable them. Re-run with -ReenableDisabled if that is what you want."
+    }
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     Write-Host "Replaced existing task '$TaskName'."
 }
 
 Register-ScheduledTask -TaskName $TaskName -Xml $xml | Out-Null
 
-Write-Host "Registered '$TaskName' — runs daily at $At as $env:USERDOMAIN\$env:USERNAME."
+# Register-ScheduledTask can emit a non-terminating error (e.g. a malformed XML
+# declaration) that prints but doesn't stop the script — leaving a "Registered"
+# message on a task that never actually got created. Verify before claiming success.
+$registered = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if (-not $registered) {
+    throw "Registration reported no terminating error but '$TaskName' does not exist — see the Task Scheduler error above."
+}
+
+Write-Host "Registered '$TaskName' — runs daily at $($At -join ' and ') as $env:USERDOMAIN\$env:USERNAME."
 Write-Host ''
 Write-Host 'Verify:'
 Write-Host "  Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo   # next/last run time, last result"

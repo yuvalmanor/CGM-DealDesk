@@ -39,12 +39,16 @@ class _FakeGmail:
         self._metas = list(emails)
         self.labels = {}
         self.removed = {}  # msg_id -> list of labels stripped in apply_label
-        self.sent = []  # (to, subject, body, sender) — Deal Notifications + Digest
+        self.sent = []  # (to, subject, body, sender, label, cc) — Deal Notifications + Digest
         self._crash_pending = crash_on_label_once
         self.fetch_retryable = None  # retryable_labels seen by the last fetch
+        self.fetch_self_addresses = None  # self_addresses seen by the last fetch
 
-    def fetch_work_queue(self, cutoff, bucket_labels, limit=None, retryable_labels=()):
+    def fetch_work_queue(
+        self, cutoff, bucket_labels, limit=None, retryable_labels=(), self_addresses=()
+    ):
         self.fetch_retryable = tuple(retryable_labels)
+        self.fetch_self_addresses = tuple(self_addresses)
         return self._metas[:limit] if limit else self._metas
 
     def fetch_email(self, msg_id):
@@ -58,8 +62,8 @@ class _FakeGmail:
         if remove_labels:
             self.removed[msg_id] = list(remove_labels)
 
-    def send_message(self, to, subject, body, sender, label=None):
-        self.sent.append((to, subject, body, sender, label))
+    def send_message(self, to, subject, body, sender, label=None, cc=None):
+        self.sent.append((to, subject, body, sender, label, cc))
 
 
 class _FakeSheets:
@@ -94,6 +98,7 @@ class _FakeSheets:
                 verdict=r.verdict,
                 price=json.loads(r.facts_json).get("purchase_price"),
                 received_date=r.received_date,
+                deals_app_row_id=r.deals_app_row_id,
             )
             for r in self.rows.values()
         ]
@@ -347,16 +352,22 @@ def test_calc_ready_pass_is_fed_and_triage_stores_row_id():
     assert sheets.rows[("e1", "0")].deals_app_row_id == row_id
 
 
-def test_calc_ready_needs_human_is_fed():
+def test_calc_ready_needs_human_is_not_fed_but_is_still_logged():
+    # The handoff still happens everywhere except the Calculator: the Property
+    # gets its Triage row and its Needs-Human bucket, it just isn't entered as a
+    # Deal until a human supplies the missing gate fact.
     gmail = _FakeGmail([_email("e1")])
+    sheets = _FakeSheets()
     calc = _FakeCalculator()
-    orch = _feeding_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [_needs_human_calc_ready_fields()]}), calc)
+    orch = _feeding_orch(gmail, sheets, _FakeLadder({"e1": [_needs_human_calc_ready_fields()]}), calc)
 
     result = orch.process_email(gmail.fetch_email("e1"))
 
     assert result.bucket is Bucket.NEEDS_HUMAN
-    assert result.deals_fed == 1
-    assert feed_row_id("e1", 0) in calc.deals
+    assert result.deals_fed == 0
+    assert calc.deals == {}
+    # ...and the Triage row claims no DEALS_APP link, because none was written.
+    assert sheets.rows[("e1", "0")].deals_app_row_id == ""
 
 
 def test_reject_is_never_fed():
@@ -426,16 +437,71 @@ def test_dry_run_previews_feed_without_writing():
     assert "e1" not in gmail.labels
 
 
+def test_feed_disabled_writes_nothing_and_stores_no_link():
+    """The Calculator kill switch (`calculator.enabled = false`): a deal that
+    would otherwise feed is triaged and logged, but never written to DEALS_APP —
+    and the Triage row must not claim a row id that does not exist."""
+    gmail = _FakeGmail([_email("e1")])
+    sheets = _FakeSheets()
+    calc = _FakeCalculator()
+    orch = Orchestrator(
+        gmail, sheets, _FakeLadder({"e1": [_pass_fields()]}), BUYBOX,
+        calculator=calc, feed_enabled=False, assumptions=ASSUMPTIONS,
+    )
+
+    result = orch.process_email(gmail.fetch_email("e1"))
+
+    assert result.bucket is Bucket.PASSED_BUYBOX   # triage is unaffected
+    assert gmail.labels["e1"] == "Passed-BuyBox"   # labeling is unaffected
+    assert result.deals_fed == 0
+    assert calc.deals == {}
+    assert calc.upsert_calls == 0                  # the gateway is never called
+    assert sheets.rows[("e1", "0")].deals_app_row_id == ""
+
+
+def test_feed_disabled_dry_run_previews_zero_feeds():
+    """A dry-run must predict what a live run would do — with the feed off that
+    is zero, not the count it would have fed."""
+    gmail = _FakeGmail([_email("e1")])
+    orch = Orchestrator(
+        gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX,
+        dry_run=True, calculator=_FakeCalculator(), feed_enabled=False,
+        assumptions=ASSUMPTIONS,
+    )
+
+    assert orch.process_email(gmail.fetch_email("e1")).deals_fed == 0
+
+
+def test_feed_disabled_notification_does_not_link_to_calculator():
+    """The Deal Notification must not point at a sheet the deal was never
+    written to — it says so, and tells the operator to enter it by hand."""
+    gmail = _FakeGmail([_email("e1")])
+    orch = Orchestrator(
+        gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX,
+        calculator=_FakeCalculator(), feed_enabled=False, assumptions=ASSUMPTIONS,
+        notify_to=NOTIFY_TO, notify_from=NOTIFY_TO,
+        calc_link="https://docs.google.com/spreadsheets/d/sheet-id/edit",
+    )
+
+    orch.process_email(gmail.fetch_email("e1"))
+
+    body = gmail.sent[0][2]
+    assert "feed disabled" in body.lower()
+    assert "sheet-id" not in body   # the live sheet link is withheld
+
+
 NOTIFY_TO = "operator@example.com"
 NOTIFY_FROM = "deals@cgm-ventures.com"
 NOTIFY_LABEL = "Deal Notifications"
+NOTIFY_DEAL_CC = "extra@example.com"
 
 
-def _notifying_orch(gmail, sheets, ladder, calculator=None):
+def _notifying_orch(gmail, sheets, ladder, calculator=None, notify_deal_cc=""):
     return Orchestrator(
         gmail, sheets, ladder, BUYBOX,
         calculator=calculator, assumptions=ASSUMPTIONS,
         notify_to=NOTIFY_TO, notify_from=NOTIFY_FROM, notify_label=NOTIFY_LABEL,
+        notify_deal_cc=notify_deal_cc,
         calc_link="https://sheet/edit",
     )
 
@@ -456,10 +522,11 @@ def test_passed_property_sends_one_notification_from_deals_mailbox():
     assert result.notified == 1
     deals = _deal_notifications(gmail)
     assert len(deals) == 1
-    to, subject, body, sender, label = deals[0]
+    to, subject, body, sender, label, cc = deals[0]
     assert to == NOTIFY_TO
     assert sender == NOTIFY_FROM          # sent from the deals mailbox
     assert label == NOTIFY_LABEL          # labeled directly, not via a filter
+    assert cc is None                     # no extra recipient unless configured
     assert "acme.com" in body             # Source
     assert "250,000" in body              # price
     assert "2,000" in body                # rent
@@ -467,6 +534,73 @@ def test_passed_property_sends_one_notification_from_deals_mailbox():
     assert "https://sheet/edit" in body   # Calculator link
     # The Triage row is stamped notified so a retry won't re-send.
     assert sheets.rows[("e1", "0")].notified is True
+
+
+def test_addressless_property_is_named_by_its_email_everywhere():
+    # No address extracted: the row, the Calculator deal and the notification all
+    # carry "<subject>|<sender>" instead of a blank the operator can't act on.
+    gmail = _FakeGmail([_email("e1", from_addr="blast@acme.com", subject="Off market deal")])
+    sheets = _FakeSheets()
+    calc = _FakeCalculator()
+    orch = _notifying_orch(gmail, sheets, _FakeLadder({"e1": [_pass_fields()]}), calc)
+
+    orch.process_email(gmail.fetch_email("e1"))
+
+    label = "Off market deal|blast@acme.com"
+    assert sheets.rows[("e1", "0")].address == label
+    assert calc.deals["dd-e1-0"]["address"] == label
+    _, subject, body, *_ = _deal_notifications(gmail)[0]
+    assert label in subject and label in body
+
+
+def test_the_email_fallback_label_never_makes_two_deals_the_same_house():
+    # Same blast subject and sender, two different Emails: the label identifies an
+    # Email, not a property, so it must not stamp a re-send breadcrumb.
+    emails = [
+        _email("m1", from_addr="blast@acme.com", subject="New Deals This Week"),
+        _email("m2", from_addr="blast@acme.com", subject="New Deals This Week"),
+    ]
+    gmail = _FakeGmail(emails)
+    sheets = _FakeSheets()
+    ladder = _FakeLadder({"m1": [_pass_fields()], "m2": [_pass_fields()]})
+    orch = Orchestrator(gmail, sheets, ladder, BUYBOX)
+
+    orch.run(cutoff=None, bucket_labels=())
+
+    assert sheets.rows[("m1", "0")].address == "New Deals This Week|blast@acme.com"
+    assert sheets.rows[("m2", "0")].resend_flag == ""
+
+
+def test_passed_notification_ccs_the_configured_extra_recipient():
+    # The new recipient rides along on the per-deal notification as a Cc, without
+    # changing the send-to-self `to`.
+    gmail = _FakeGmail([_email("e1", from_addr="blast@acme.com")])
+    orch = _notifying_orch(
+        gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), _FakeCalculator(),
+        notify_deal_cc=NOTIFY_DEAL_CC,
+    )
+
+    orch.process_email(gmail.fetch_email("e1"))
+
+    to, _subject, _body, _sender, _label, cc = _deal_notifications(gmail)[0]
+    assert to == NOTIFY_TO          # send-to-self recipient unchanged
+    assert cc == NOTIFY_DEAL_CC     # extra recipient added as a Cc
+
+
+def test_digest_does_not_cc_the_extra_recipient():
+    # deal_cc fans out per-deal Passed notifications only — the Daily Digest still
+    # goes to the send-to-self recipient alone.
+    emails = [_email("e1"), _email("e2")]
+    gmail = _FakeGmail(emails)
+    ladder = _FakeLadder({"e1": [_pass_fields()], "e2": [_reject_fields()]})
+    orch = _notifying_orch(
+        gmail, _FakeSheets(), ladder, _FakeCalculator(), notify_deal_cc=NOTIFY_DEAL_CC
+    )
+
+    orch.run(cutoff=None, bucket_labels=())
+
+    digest = [s for s in gmail.sent if s[1].startswith("DealDesk daily digest")][0]
+    assert digest[5] is None  # cc slot — digest carries no extra recipient
 
 
 def test_rerun_does_not_resend_notification():
@@ -715,3 +849,168 @@ def test_crash_before_label_reruns_without_duplicating_row():
     assert len(sheets.rows) == 1               # upsert updated, did not duplicate
     assert sheets.upsert_calls == 2            # it really did write again
     assert gmail.labels["e1"] == "Passed-BuyBox"  # now labeled last
+
+
+# ---- self-ingestion exclusion ---------------------------------------------
+
+
+def test_work_queue_excludes_dealdesks_own_send_addresses():
+    """DealDesk's notifications land in the mailbox it watches. The exclusion is
+    handed to the queue, so its own output is never even fetched — the loop that
+    wrote half the live Triage Log."""
+    gmail = _FakeGmail([_email("e1")])
+    orch = Orchestrator(
+        gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX,
+        self_addresses=("deals@cgm-ventures.com",),
+    )
+
+    orch.run(cutoff=None, bucket_labels=())
+
+    assert gmail.fetch_self_addresses == ("deals@cgm-ventures.com",)
+
+
+def test_work_queue_self_addresses_default_to_empty():
+    gmail = _FakeGmail([_email("e1")])
+    orch = Orchestrator(gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), BUYBOX)
+
+    orch.run(cutoff=None, bucket_labels=())
+
+    assert gmail.fetch_self_addresses == ()
+
+
+# ---- same-offer guard (duplicate Calculator feeds) ------------------------
+
+
+def _feed_run(sheets, calc, msg_id, fields):
+    """One Email through a feeding Orchestrator, fresh per call — the re-send
+    index is re-read from the sheet exactly as the next daily run would."""
+    email = _email(msg_id)
+    gmail = _FakeGmail([email])
+    return _feeding_orch(gmail, sheets, _FakeLadder({msg_id: [fields]}), calc).process_email(email)
+
+
+def test_same_house_same_price_in_a_later_email_is_not_fed_twice():
+    """The 2002 Rockwall case: nine DEALS_APP rows for one $289,000 deal, because
+    feed_row_id is per-Email and every re-send arrived in a new Email."""
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    _feed_run(sheets, calc, "m1", _at(MAIN_ST, price=250000))
+    result = _feed_run(sheets, calc, "m2", _at(MAIN_STREET, price=250000))
+
+    assert list(calc.deals) == [feed_row_id("m1", 0)]  # one row, not two
+    assert result.deals_fed == 0
+    assert result.feed_duplicates == 1
+
+
+def test_the_deduped_property_still_gets_its_own_triage_row_and_breadcrumb():
+    """Rows are never merged (US 27/28) — only the Calculator write is suppressed."""
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    _feed_run(sheets, calc, "m1", _at(MAIN_ST, price=250000))
+    _feed_run(sheets, calc, "m2", _at(MAIN_STREET, price=250000))
+
+    assert set(sheets.rows) == {("m1", "0"), ("m2", "0")}
+    assert "possible re-send" in sheets.rows[("m2", "0")].resend_flag
+
+
+def test_the_deduped_row_links_to_the_calculator_row_that_holds_the_deal():
+    # Not a blank link: the operator must still be able to reach the deal.
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    _feed_run(sheets, calc, "m1", _at(MAIN_ST, price=250000))
+    _feed_run(sheets, calc, "m2", _at(MAIN_STREET, price=250000))
+
+    assert sheets.rows[("m2", "0")].deals_app_row_id == feed_row_id("m1", 0)
+
+
+def test_a_price_drop_on_the_same_house_still_feeds():
+    """The case the re-send flag exists for — a price cut reviving a deal must
+    reach the Calculator as its own row."""
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    _feed_run(sheets, calc, "m1", _at(MAIN_ST, price=250000))
+    result = _feed_run(sheets, calc, "m2", _at(MAIN_STREET, price=235000))
+
+    assert set(calc.deals) == {feed_row_id("m1", 0), feed_row_id("m2", 0)}
+    assert result.deals_fed == 1
+    assert result.feed_duplicates == 0
+
+
+def test_duplicate_within_a_single_run_is_suppressed():
+    # Rockwall was fed three times inside one run, not only across days.
+    emails = [_email("m1"), _email("m2"), _email("m3")]
+    gmail = _FakeGmail(emails)
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    ladder = _FakeLadder({
+        "m1": [_at(MAIN_ST, price=250000)],
+        "m2": [_at(MAIN_STREET, price=250000)],
+        "m3": [_at(MAIN_ST, price=250000)],
+    })
+    _feeding_orch(gmail, sheets, ladder, calc).run(cutoff=None, bucket_labels=())
+
+    assert list(calc.deals) == [feed_row_id("m1", 0)]
+    assert len(sheets.rows) == 3  # every sighting still logged
+
+
+def test_a_rerun_of_the_same_email_still_updates_its_own_row():
+    """The same-offer guard must not shadow feed_row_id's own idempotency: a
+    re-run has to keep updating its row, not skip the write and go stale."""
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    _feed_run(sheets, calc, "m1", _at(MAIN_ST, price=250000))
+    result = _feed_run(sheets, calc, "m1", _at(MAIN_ST, price=250000))
+
+    assert list(calc.deals) == [feed_row_id("m1", 0)]
+    assert result.deals_fed == 1        # re-written, not suppressed
+    assert result.feed_duplicates == 0
+    assert calc.upsert_calls == 2       # same id, updated in place
+
+
+def test_addressless_duplicates_are_never_suppressed():
+    """Two nameless deals at the same price are not provably the same house; a
+    false merge is worse than a duplicate row (address.normalize_address)."""
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    fields = {"purchase_price": 250000, "year_built": 2010, "city": "Dallas", "monthly_rent": 2000}
+    _feed_run(sheets, calc, "m1", dict(fields))
+    result = _feed_run(sheets, calc, "m2", dict(fields))
+
+    assert set(calc.deals) == {feed_row_id("m1", 0), feed_row_id("m2", 0)}
+    assert result.feed_duplicates == 0
+
+
+def test_an_unfed_prior_does_not_suppress_a_later_feed():
+    """A Rejected sighting writes no DEALS_APP row, so a later qualifying offer
+    at the same price must still feed."""
+    sheets, calc = _FakeSheets(), _FakeCalculator()
+    _feed_run(sheets, calc, "m1", _at(MAIN_ST, price=250000, year_built=1950))  # Reject
+    result = _feed_run(sheets, calc, "m2", _at(MAIN_STREET, price=250000))
+
+    assert sheets.rows[("m1", "0")].verdict == "Reject"
+    assert list(calc.deals) == [feed_row_id("m2", 0)]
+    assert result.deals_fed == 1
+
+
+def test_fed_deal_carries_the_sender_as_seller_agent():
+    """The sender is a header, so it never reaches the Extraction Ladder — the
+    orchestrator has to hand it to the deal builder itself."""
+    email = _email("e1", from_addr="Momentum Capital <dispo@dfwinvestments.com>")
+    gmail = _FakeGmail([email])
+    calc = _FakeCalculator()
+    _feeding_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), calc).process_email(email)
+
+    assert calc.deals[feed_row_id("e1", 0)]["sellerAgent"] == "Momentum Capital"
+
+
+def test_fed_deal_never_inherits_the_calculators_example_seller():
+    # No display name, no extracted seller: still an explicit key, never absent.
+    email = _email("e1", from_addr="")
+    gmail = _FakeGmail([email])
+    calc = _FakeCalculator()
+    _feeding_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [_pass_fields()]}), calc).process_email(email)
+
+    assert calc.deals[feed_row_id("e1", 0)]["sellerAgent"] == ""
+
+
+def test_fed_deal_carries_sqft_end_to_end():
+    email = _email("e1")
+    gmail = _FakeGmail([email])
+    calc = _FakeCalculator()
+    fields = dict(_pass_fields(), sqft=2057)
+    _feeding_orch(gmail, _FakeSheets(), _FakeLadder({"e1": [fields]}), calc).process_email(email)
+
+    assert calc.deals[feed_row_id("e1", 0)]["sqft"] == 2057

@@ -14,6 +14,12 @@ That asymmetry decides every judgement call here.
 
 An address that yields no tokens returns ``""``. The empty key never matches, so
 an address-less Property is never called a re-send of another address-less one.
+
+Also here: ``address_label`` — what a Property's address *column* says when the
+extraction found no address. It falls back to ``"<subject>|<sender>"`` so every
+row, notification and Calculator deal still names something the operator can find
+in Gmail. That label is display-only: it is never a key (see the sentinel guard
+in ``normalize_address``).
 """
 
 from __future__ import annotations
@@ -70,6 +76,11 @@ _STRUCTURAL = (
     | set(_STATES.values())
 )
 
+# Separates the two halves of the no-address fallback label ("<subject>|<sender>").
+# A pipe does not occur in a US street address, which is what lets it double as
+# the sentinel ``normalize_address`` refuses to key on.
+FALLBACK_SEP = "|"
+
 # "#" is a unit designator glued to its number ("#4"); give it whitespace so it
 # tokenizes, then let the designator rule fold it in.
 _HASH_RE = re.compile(r"#")
@@ -85,6 +96,14 @@ def normalize_address(raw: object) -> str:
         return ""
     text = str(raw).strip().lower()
     if not text:
+        return ""
+    # A fallback label ("<subject>|<sender>") identifies an *Email*, not a house.
+    # Keying it would make two address-less blasts sharing a subject line collide
+    # and be called the same property — the one claim this module must never
+    # fabricate. Refuse it, the same way a blank address is refused. A real
+    # address carrying a pipe would only lose a re-send match, which is the cheap
+    # side of the trade.
+    if FALLBACK_SEP in text:
         return ""
 
     text = _HASH_RE.sub(f" {_UNIT} ", text)
@@ -104,6 +123,31 @@ def normalize_address(raw: object) -> str:
     if not any(t not in _STRUCTURAL for t in tokens):
         return ""
     return " ".join(tokens)
+
+
+def address_label(raw: object, subject: object = "", sender: object = "") -> str:
+    """How a Property's address is *shown* — on its Triage row, in its Deal
+    Notification and digest line, and on its Calculator row.
+
+    The extracted address when there is one. When there isn't, the Email's own
+    identity instead: ``"<subject>|<sender>"``. A blank column tells the operator
+    nothing and can't be searched; the subject and sender are exactly what they'd
+    use to pull the Email up in Gmail. Returns ``""`` only when there is no
+    address *and* no subject or sender to fall back to.
+
+    Display only — never a re-send key (``normalize_address`` refuses the label).
+    """
+    address = _clean(raw)
+    if address:
+        return address
+    subject_text, sender_text = _clean(subject), _clean(sender)
+    if not subject_text and not sender_text:
+        return ""
+    return f"{subject_text}{FALLBACK_SEP}{sender_text}"
+
+
+def _clean(value: object) -> str:
+    return str(value).strip() if value is not None else ""
 
 
 def _canonical(token: str) -> str:

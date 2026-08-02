@@ -35,6 +35,16 @@ def test_row_carries_facts_verdict_reasons_and_calc_ready():
     assert values[HEADER.index("notified")] == "FALSE"
 
 
+def test_row_without_an_address_names_the_email_instead():
+    # A blank address column can't be read or searched; the Email's subject and
+    # sender are what the operator would use to pull it up in Gmail.
+    ev = Evaluation(Verdict.NEEDS_HUMAN, ("missing address",), False, ("address",))
+    row = build_triage_row(_email(), 0, {"purchase_price": 250000}, ev)
+    assert row.address == 'deal|"Acme" <deals@acme.com>'
+    # The fallback is DealDesk's annotation, not a fact the Source stated.
+    assert "address" not in json.loads(row.facts_json)
+
+
 def test_needs_human_row_records_missing_fields():
     ev = Evaluation(Verdict.NEEDS_HUMAN, ("missing city",), False, ("city",))
     row = build_triage_row(_email(), 1, {"purchase_price": 250000}, ev)

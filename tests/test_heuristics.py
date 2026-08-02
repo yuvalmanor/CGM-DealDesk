@@ -167,3 +167,264 @@ def test_year_build_misspelling_is_recovered():
 def test_pipe_gap_does_not_jump_across_a_labeled_column():
     # The pipe gap must not cross a text column into an unrelated number.
     assert "purchase_price" not in generic_extract("Price | Beds | 5")
+
+
+# ---- square footage -------------------------------------------------------
+#
+# Fixtures are the real spellings from the live Sources (verbatim fragments of
+# the Emails behind the Calculator-fed deals), one per format in the bank.
+
+
+def test_sqft_square_footage_label():
+    # Lush Property Solutions
+    text = "Bed: 4 Bath: 3 Square Footage: 2,954 Zoning: Single Family Lot Size: 5,450 Sq. Ft."
+    assert generic_extract(text)["sqft"] == 2954
+
+
+def test_sqft_sq_ft_label():
+    # A-Team Home Buyers
+    text = "BEDS: 3 YEAR BUILT: 1963 BATHS: 2 EMD: $5,000 SQ FT: 1,610 CLOSE: 07/22/26"
+    assert generic_extract(text)["sqft"] == 1610
+
+
+def test_sqft_building_area_label():
+    # Alpha Home Buyers
+    text = "Beds/Baths: 3/2 Building Area: 1,868 SQFT Garage: 2 car garage Lot Size: 7,405 SQFT"
+    assert generic_extract(text)["sqft"] == 1868
+
+
+def test_sqft_bare_sqft_label():
+    # Momentum Capital
+    text = "Property Type: SFH Bed/Bath: 3/3 SQFT: 2,057 LOT SQFT: 6,665 Yr Build: 2002"
+    assert generic_extract(text)["sqft"] == 2057
+
+
+def test_sqft_living_area_label():
+    # Aaragon Properties
+    text = "3 Beds | 2 Bath Living area: 2,100 sqft Lot size: 2.42 Acres Year Built: 2004"
+    assert generic_extract(text)["sqft"] == 2100
+
+
+def test_sqft_unlabeled_value_first():
+    # InvestorLift — no label anywhere, area trails the bed/bath run
+    text = "Fort Worth, TX 76132 3 beds 2 baths 1,418 sqft"
+    assert generic_extract(text)["sqft"] == 1418
+
+
+def test_sqft_unlabeled_without_thousands_separator():
+    # Rise Realty — "2039  Sqft", two spaces, no comma
+    text = "3  Beds  2  Bath  2039  Sqft  2  Garage Sachse, TX 75048"
+    assert generic_extract(text)["sqft"] == 2039
+
+
+# ---- the four traps -------------------------------------------------------
+
+
+def test_sqft_never_reads_the_lot_size():
+    # The lot is quoted in the same line and is a plausible house size, so only
+    # the label can tell them apart.
+    text = "Building Area: 1,868 SQFT Lot Size: 7,405 SQFT"
+    assert generic_extract(text)["sqft"] == 1868
+
+
+def test_sqft_never_reads_a_lot_labeled_sqft():
+    text = "LOT SQFT: 6,665 Yr Build: 2002"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_never_reads_money_sitting_against_the_label():
+    # A-Team's "EMD: $5,000 SQ FT: 1,610" — the deposit abuts the SQ FT label.
+    text = "EMD: $5,000 SQ FT: 1,610"
+    assert generic_extract(text)["sqft"] == 1610
+
+
+def test_sqft_never_reads_a_comparables_area():
+    # Momentum lists six comps, each with its own area; none is this house.
+    text = "COMPS: 5522 Challenger Court | $459,000 | 2,315 SQFT 115 Mayflower Court | $460,000 | 2,332 SQFT"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_ignores_a_carport_area():
+    # Lush: "It also has a 460 Sq. Ft. Carport" — below any dwelling floor.
+    text = "This property is a 4 Bedroom, 3 Full Bathroom. It also has a 460 Sq. Ft. Carport"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_ignores_boilerplate_with_no_figure():
+    # New Western's disclaimer names the term but quotes no number.
+    text = "including, but not limited to, estimated rehab costs, as-is property square footage measurements"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_absent_when_the_email_does_not_say():
+    assert "sqft" not in generic_extract("Asking Price: $250,000 Year Built: 2010")
+
+
+def test_labeled_sqft_wins_over_an_earlier_unlabeled_lot_figure():
+    text = "Lot Size: 8,669 sq ft ACCESS: call SQ FT: 1,610"
+    assert generic_extract(text)["sqft"] == 1610
+
+
+# ---- formats and traps found by the 272-email audit ------------------------
+#
+# The first pass was built from 22 Emails (the Calculator-fed ones) and was
+# wrong on the wider corpus in both directions. These are the cases it missed.
+
+
+def test_sqft_square_feet_label():
+    # Q Acquisitions — "Square Feet", a spelling the first pass didn't know, so
+    # it fell through to value-first and returned a comparable's area instead.
+    text = "Details Bed / Bath: 3 / 2 Square Feet: 1,773 Year Build: 1987 Lot Size: 0.126 Acres"
+    assert generic_extract(text)["sqft"] == 1773
+
+
+def test_sqft_is_the_house_not_the_garage_listed_as_the_next_field():
+    # Southern Hills — "Size: 1,114 SqFt Garage: 1 Car, 325 SqFt (attached)".
+    # The outbuilding guard fired on the *following field label* and returned
+    # the garage's 325.
+    text = "Bedrooms: 3 Bathrooms: 2 Size: 1,114 SqFt Garage: 1 Car, 325 SqFt (attached) Built: 1986"
+    assert generic_extract(text)["sqft"] == 1114
+
+
+def test_sqft_house_label_with_a_trailing_garage_field():
+    text = "House: 2,026 SqFt Garage: 2 Car, 484 SqFt (attached) Built: 1973"
+    assert generic_extract(text)["sqft"] == 2026
+
+
+# ---- sold comparables (the biggest source of wrong answers) ---------------
+
+
+def test_sqft_ignores_a_sold_comparable_in_a_comparables_block():
+    text = "Comparables 5414 Cypress Dr Rowlett, Texas SOLD for $385,000 3 bed / 2 bath 1,776 SqFt"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_ignores_a_labeled_comparable_with_a_sale_price():
+    # Fazio — the comp carries the same "SqFt:" label as a subject property.
+    text = "10757 Braemoor Drive Beds: 3 | Bath: 2 | SqFt: 1,983 Sold For: $309,000 | Price/SqFt: $155.82"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_ignores_a_comparable_sold_on_a_date():
+    text = "COMPARABLES: Same street - Sold on 02/10/26 for $167,500 Bed/Bath: 3/2 Sqft: 1,347"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_ignores_a_comp_described_as_closed():
+    # New Western writes prose comps that say "closed for", never "sold".
+    text = "we really only have two legit comps - 2737 Jills Dr which was 1326 SqFt 3/2/0 and closed for $300,000"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_the_word_comps_alone_does_not_reject_the_subject_property():
+    """Keying the guard on the noun rather than the sale cost 13 correct answers:
+    two Sources put "comps" right beside a subject property's own figures."""
+    # Q Acquisitions — a link caption immediately before the stats block.
+    qa = "FCFS. Click Here for Photos and comps Details Bed / Bath: 3 / 2 Square Feet: 1,399 Year Build: 1925"
+    assert generic_extract(qa)["sqft"] == 1399
+    # Momentum — its *rent* line is called "Rental Comps".
+    momentum = "Rental Comps: $2,800-$3,000/mo Property Details: Bed/Bath: 3/3 SQFT: 2,057 LOT SQFT: 6,665"
+    assert generic_extract(momentum)["sqft"] == 2057
+
+
+# ---- other correct abstentions -------------------------------------------
+
+
+def test_sqft_ignores_a_prose_range_describing_an_addition():
+    text = "a roof in good condition, and an additional 400-500 sqft that was added along with a second bath"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_absent_on_a_land_listing_that_states_only_a_lot():
+    # Southern Hills teardown: no house area exists to extract.
+    text = "Price: $135k New Construction Value: ~$400k Property Stats Lot: ~7,031 SqFt (0.1614 Acres)"
+    assert "sqft" not in generic_extract(text)
+
+
+def test_sqft_absent_when_only_a_lot_size_is_given():
+    text = "First Come First Serve Lot Size: 16,457 Sq. Ft. Lot Acres: .38"
+    assert "sqft" not in generic_extract(text)
+
+
+# ---- ARV: approximate markers (found by the 272-email audit) ---------------
+#
+# The gap between label and figure was colon/space/pipe only, so every Source
+# that hedges its ARV was silently dropped. Fixtures are the live spellings.
+
+
+def test_arv_with_a_tilde():
+    # Southern Hills hedges every ARV it quotes.
+    assert generic_extract("Price: $180k Est. ARV: ~$284k Property Stats")["arv"] == 284000
+
+
+def test_arv_with_a_tilde_and_a_plus():
+    assert generic_extract("Price: $195k Est. ARV: ~$245k+ Property Stats")["arv"] == 245000
+
+
+def test_arv_with_a_plus_minus_marker():
+    # Bumble Bee — "+-" before the figure.
+    assert generic_extract("** Estimated ARV: +- $65,000")["arv"] == 65000
+
+
+def test_arv_stated_in_prose():
+    # ProphetHomes writes ARV as a sentence, not a field.
+    text = "expect a major rehab. With ARV estimated at $345K+, this is a prime opportunity"
+    assert generic_extract(text)["arv"] == 345000
+
+
+def test_arv_range_sharing_one_k_suffix_scales_the_low_end():
+    """"~$175-200k" — the k carries the magnitude for both ends. Reading the low
+    end is the conservative choice for an ARV; reading it as a bare 175 would
+    have been dropped by the plausibility floor, and mis-stripping the digit
+    produced $17,000."""
+    assert generic_extract("Price: $110k Estimated ARV: ~$175-200k Property")["arv"] == 175000
+
+
+def test_arv_range_with_independent_dollar_amounts_takes_the_low_end():
+    # "$975,000-$1,000,000" — both ends denominated, no shared suffix to apply.
+    assert generic_extract("ARV: $975,000-$1,000,000 PICS")["arv"] == 975000
+
+
+def test_arv_range_without_a_k_is_unchanged():
+    assert generic_extract("ARV: $440,000-485,000 Rents: $2,850+")["arv"] == 440000
+
+
+def test_approximate_marker_does_not_change_a_plain_amount():
+    assert generic_extract("ARV: $250,000 Rental Comps: $1,600/mo")["arv"] == 250000
+
+
+def test_arv_comparable_is_not_read_as_the_deals_arv():
+    # shared1 quotes an "ARV Comparable" that already sold — a different house.
+    text = "AS IS Comparable | SOLD for $275k on 7/24/25 ARV Comparable | SOLD for $515,000 on 8/7/25"
+    assert "arv" not in generic_extract(text)
+
+
+# ---- year built: bounded, and readable in either direction ----------------
+
+
+def test_year_built_read_when_it_precedes_the_word():
+    # New Western: "Off-Market vacant 2003 build in 76116" — reading only
+    # forwards took the ZIP's first four digits (7611) and passed the gate.
+    text = "Off-Market vacant 2003 build in 76116 with a pool for only 210k!"
+    assert generic_extract(text)["year_built"] == 2003
+
+
+def test_a_zip_code_is_never_read_as_a_year():
+    text = "vacant 2003 build in 76116 with a pool"
+    assert generic_extract(text)["year_built"] != 7611
+
+
+def test_labeled_year_still_wins_and_is_unchanged():
+    assert generic_extract("Bedrooms 2 Bathrooms 2.0 Year Built 1969 Cash Price $69,999")["year_built"] == 1969
+    assert generic_extract("Year Build: 1968")["year_built"] == 1968
+    assert generic_extract("Yr Build: 2002 Occupancy: Occupied")["year_built"] == 2002
+
+
+def test_implausible_year_is_skipped_not_returned():
+    # A street number abutting the word must not become a year.
+    assert "year_built" not in generic_extract("build 7341 Baker Boulevard, Richland Hills")
+
+
+def test_year_window_accepts_a_new_build_and_an_old_house():
+    assert generic_extract("Year Built: 2026")["year_built"] == 2026
+    assert generic_extract("Year Built: 1922")["year_built"] == 1922

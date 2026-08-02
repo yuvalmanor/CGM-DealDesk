@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from .address import address_label
 from .evaluator import Evaluation
 from .models import Email
 from .source import derive_source
@@ -87,10 +88,12 @@ def build_triage_row(
         property_index=index,
         received_date=email.date,
         source=derive_source(email.from_addr),
-        address=str(fields.get("address", "")),
-        # The extracted facts, and only those — the re-send breadcrumb is
-        # DealDesk's own annotation, so it gets its own column rather than
-        # polluting the record of what the Source actually said.
+        # No address extracted -> the Email's own identity ("<subject>|<sender>")
+        # rather than a blank cell the operator can neither read nor search.
+        address=address_label(fields.get("address"), email.subject, email.from_addr),
+        # The extracted facts, and only those — the re-send breadcrumb and the
+        # address fallback are DealDesk's own annotations, so ``facts_json`` stays
+        # the record of what the Source actually said.
         facts_json=json.dumps(fields, sort_keys=True),
         verdict=evaluation.verdict.value,
         reasons="; ".join(evaluation.reasons),

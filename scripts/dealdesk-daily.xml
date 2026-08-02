@@ -1,4 +1,10 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0"?>
+<!--
+  NOTE: no `encoding="..."` in the declaration above. install-task.ps1 registers
+  this by passing the XML to Register-ScheduledTask as an in-memory (UTF-16)
+  string; an encoding attribute makes Task Scheduler's parser try to switch
+  encodings and fail with "unable to switch the encoding". Leave it off.
+-->
 <!--
   Windows Task Scheduler definition for the DealDesk daily triage run (Phase 7).
 
@@ -23,8 +29,18 @@
     <URI>\CGM DealDesk Daily Triage</URI>
   </RegistrationInfo>
   <Triggers>
+    <!-- Two daily runs (default 07:00 and 20:00). Each is its own once-a-day
+         CalendarTrigger with DaysInterval=1; MultipleInstancesPolicy=IgnoreNew
+         keeps a catch-up run from overlapping the next scheduled one. -->
     <CalendarTrigger>
-      <StartBoundary>{{START_BOUNDARY}}</StartBoundary>
+      <StartBoundary>{{START_BOUNDARY_1}}</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+    <CalendarTrigger>
+      <StartBoundary>{{START_BOUNDARY_2}}</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByDay>
         <DaysInterval>1</DaysInterval>

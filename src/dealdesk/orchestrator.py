@@ -12,10 +12,20 @@ updates rather than duplicates. A *handled* mid-run failure lands the Email in
 ``Error`` (retryable).
 
 The Calculator feed (Phase 3) sits between the Triage upsert and the label. A
-calc-ready Pass/Needs-Human Property is written as a partial Deal into
-``DEALS_APP``, keyed on a deterministic row id (``feed_row_id``) so the feed is
+calc-ready Property that passed every Buy Box gate is written as a partial Deal
+into ``DEALS_APP``, keyed on a deterministic row id (``feed_row_id``) so the feed is
 idempotent by construction and the Triage row can carry the id as the
-triage->Calculator link.
+triage->Calculator link. That id is per-Email, so it deduplicates a *re-run* but
+not the same house arriving in a *new* Email; the same-offer guard
+(``deal_input.already_fed``) closes that gap by declining to write a second row
+for an address the Calculator already holds at the same price. It suppresses only
+the Calculator write — the Triage row is still written, because rows are never
+merged.
+
+The work queue excludes DealDesk's own send addresses (``self_addresses``).
+Notifications go to the mailbox DealDesk watches, so without that exclusion each
+run ingests the previous run's output as fresh deals — and a Digest body lists
+every address in the run, so the AI rung re-extracts them all.
 
 Notifications (Phase 4) are the last, best-effort step — *after* the label, so
 the Email is already "done" and a failed send never flips its Bucket to Error.
@@ -37,15 +47,22 @@ from dataclasses import dataclass, field
 from datetime import date
 from email.utils import parsedate_to_datetime
 
+from .address import address_label
 from .buybox import BuyBox
-from .deal_input import Assumptions, build_deal_input, feed_row_id, should_feed
+from .deal_input import (
+    Assumptions,
+    already_fed,
+    build_deal_input,
+    feed_row_id,
+    should_feed,
+)
 from .evaluator import Evaluation, evaluate
 from .extraction import ExtractionLadder
 from .models import RETRYABLE_BUCKET_VALUES, Bucket, Email, Verdict
 from .notifications import build_deal_notification, build_digest
 from .resend import PriorProperty, ResendIndex, build_resend_flag
 from .rollup import roll_up
-from .source import derive_source
+from .source import derive_seller_agent, derive_source
 from .triage_log import build_triage_row
 
 
@@ -62,6 +79,11 @@ class EmailResult:
     deals_fed: int = 0
     notified: int = 0
     resends: int = 0
+    # Properties that would have been fed but for the same-offer guard — the
+    # Calculator already holds that address at that price. Reported, never
+    # silent: a suppressed write the operator can't see is indistinguishable
+    # from a lost one.
+    feed_duplicates: int = 0
 
 
 class Orchestrator:
@@ -73,13 +95,16 @@ class Orchestrator:
         buybox: BuyBox,
         dry_run: bool = False,
         calculator=None,
+        feed_enabled: bool = True,
         assumptions: Assumptions | None = None,
         notify_to: str = "",
         notify_from: str = "",
         notify_label: str = "",
+        notify_deal_cc: str = "",
         calc_link: str = "",
         today: date | None = None,
         escalate_after_days: int = 3,
+        self_addresses: tuple[str, ...] = (),
     ):
         self._gmail = gmail
         self._sheets = sheets
@@ -87,20 +112,31 @@ class Orchestrator:
         self._buybox = buybox
         self._dry_run = dry_run
         self._calculator = calculator
+        self._feed_enabled = feed_enabled
         self._assumptions = assumptions
         self._notify_to = notify_to
         self._notify_from = notify_from
         self._notify_label = notify_label
+        self._notify_deal_cc = notify_deal_cc
         self._calc_link = calc_link
         self._today = today
         self._escalate_after_days = escalate_after_days
+        self._self_addresses = self_addresses
         self._index: ResendIndex | None = None  # re-send lookup, loaded once per run
 
     def run(self, cutoff: date, bucket_labels, limit: int | None = None) -> list[EmailResult]:
         # Fold retryable Buckets (Error) back into the queue: they are not negated
         # in the query, so a failed Email is picked up and retried this run.
         retryable = tuple(l for l in bucket_labels if l in RETRYABLE_BUCKET_VALUES)
-        metas = self._gmail.fetch_work_queue(cutoff, bucket_labels, limit, retryable_labels=retryable)
+        metas = self._gmail.fetch_work_queue(
+            cutoff,
+            bucket_labels,
+            limit,
+            retryable_labels=retryable,
+            # DealDesk's own notifications are sent to the mailbox it watches;
+            # excluding them here is what stops the pipeline eating its own tail.
+            self_addresses=self._self_addresses,
+        )
         results: list[EmailResult] = []
         for meta in metas:
             email = self._gmail.fetch_email(meta.id)
@@ -111,8 +147,14 @@ class Orchestrator:
     def _can_feed(self) -> bool:
         """Feeds require the standing assumptions (to build a valid Deal). Gated
         on assumptions, not the gateway, so a ``--dry-run`` still *previews* the
-        feed count without a configured sink."""
-        return self._assumptions is not None
+        feed count without a configured sink.
+
+        ``feed_enabled`` is the operator's kill switch (``calculator.enabled``),
+        and it is checked *here* rather than by dropping the gateway: with the
+        feed off, no Deal is built, no ``feed_row_id`` is minted, and the Triage
+        row therefore never claims a DEALS_APP link that was never written. A
+        dry-run reports 0 feeds, which is what a live run would do."""
+        return self._feed_enabled and self._assumptions is not None
 
     def process_email(self, email: Email) -> EmailResult:
         try:
@@ -136,27 +178,62 @@ class Orchestrator:
             send_now = candidates if will_send else []
             notify_set = set(send_now)
 
-            # Decide the Calculator feed per Property (calc-ready + Pass/Needs-Human).
+            # Decide the Calculator feed per Property (calc-ready + Verdict Pass).
             # The Triage row carries the deterministic DEALS_APP id as the link, so
             # compute it up front — before the upsert — even though the actual feed
             # happens after (both are idempotent, so the order is crash-safe).
             feeds: list[tuple[str, dict]] = []
             fed_ids: dict[int, str] = {}
             resends: dict[int, str] = {}
+            duplicates = 0  # feeds suppressed by the same-offer guard
             index = self._resend_index()
             rows = []
             for i, (fields, ev) in enumerate(zip(properties, evaluations)):
+                # What this Property is *called* everywhere the operator sees it:
+                # its address, or "<subject>|<sender>" when none was extracted.
+                label = address_label(fields.get("address"), email.subject, email.from_addr)
+
+                # The re-send lookup keys on the *extracted* address only — the
+                # fallback label identifies an Email, not a house, so it must never
+                # match (``normalize_address`` refuses it either way). It runs
+                # before the feed decision because the feed reads the same priors:
+                # the breadcrumb and the same-offer guard are two readings of one
+                # lookup, so the Triage row and the Calculator can never disagree
+                # about whether this house has been seen before.
+                address = fields.get("address", "")
+                priors = index.lookup(address, exclude_message_id=email.id)
+                flag = build_resend_flag(priors)
+                if flag:
+                    resends[i] = flag
+
                 row_id = ""
                 if self._can_feed() and should_feed(ev):
-                    row_id = feed_row_id(email.id, i)
-                    feeds.append((row_id, build_deal_input(fields, self._assumptions)))
+                    # An identical offer (same address, same price) already sits
+                    # in DEALS_APP — link this row to it instead of writing a
+                    # second copy. A re-send at a *different* price is a new offer
+                    # and feeds normally, which is the case the operator cares
+                    # about. The Triage row is written either way: rows are never
+                    # merged, only Calculator writes are suppressed.
+                    existing = already_fed(priors, fields.get("purchase_price"))
+                    if existing:
+                        row_id = existing
+                        duplicates += 1
+                    else:
+                        row_id = feed_row_id(email.id, i)
+                        feeds.append((
+                            row_id,
+                            build_deal_input(
+                                fields,
+                                self._assumptions,
+                                address=label,
+                                # From the header, not the extracted facts — the
+                                # ladder never sees the sender.
+                                seller_agent=derive_seller_agent(email.from_addr),
+                            ),
+                        ))
                     fed_ids[i] = row_id
                 notified = (i in already) or (i in notify_set)
 
-                address = fields.get("address", "")
-                flag = build_resend_flag(index.lookup(address, exclude_message_id=email.id))
-                if flag:
-                    resends[i] = flag
                 row = build_triage_row(
                     email, i, fields, ev,
                     deals_app_row_id=row_id, notified=notified, resend_flag=flag,
@@ -168,10 +245,15 @@ class Orchestrator:
                     PriorProperty(
                         message_id=email.id,
                         property_index=i,
-                        address=row.address,
+                        address=address,
                         verdict=ev.verdict.value,
                         price=_price_of(fields),
                         received_date=email.date,
+                        # Carries the fed row id so a later Email in this same run
+                        # offering the identical deal is deduped too — the run that
+                        # wrote 2002 Rockwall three times did it within single runs,
+                        # not only across days.
+                        deals_app_row_id=row_id,
                     )
                 )
 
@@ -205,6 +287,7 @@ class Orchestrator:
                 deals_fed=len(feeds),
                 notified=notified_count,
                 resends=len(resends),
+                feed_duplicates=duplicates,
             )
         except Exception as exc:  # handled mid-run failure -> Error (retryable)
             bucket = self._error_bucket(email)
@@ -283,10 +366,13 @@ class Orchestrator:
                 source=source,
                 calc_link=self._calc_link_for(fed_ids.get(i)),
                 resend_flag=resends.get(i, ""),
+                email_subject=email.subject,
+                email_sender=email.from_addr,
             )
             self._gmail.send_message(
                 self._notify_to, notification.subject, notification.body,
                 self._notify_from, label=self._notify_label or None,
+                cc=self._notify_deal_cc or None,
             )
 
     def _send_digest(self, results: list[EmailResult]) -> None:
@@ -303,6 +389,9 @@ class Orchestrator:
     def _calc_link_for(self, row_id: str | None) -> str:
         """Link to the Calculator for a fed Property — the sheet plus its row id.
         A Pass that wasn't calc-ready has no fed row; the bare sheet link stands."""
+        if not self._feed_enabled:
+            # Never point the operator at a sheet this deal was not written to.
+            return "(Calculator feed disabled — deal NOT written; enter it manually)"
         base = self._calc_link or "(Calculator not configured)"
         return f"{base} (row {row_id})" if row_id else base
 

@@ -24,6 +24,7 @@ _EXTRACT_FIELDS = (
     "monthly_rent",
     "arv",
     "year_built",
+    "sqft",
     "beds",
     "baths",
 )
@@ -97,7 +98,11 @@ class AnthropicFallback:
                         "estimated after-repair value, or a price-per-square-foot figure "
                         "as `purchase_price`. If a rent is given as a range, use the "
                         "higher figure. If two genuinely conflicting prices appear with no "
-                        "way to tell which is current, omit `purchase_price`.\n\n"
+                        "way to tell which is current, omit `purchase_price`.\n"
+                        "For `sqft`, report the building's living area only. Listings "
+                        "quote a lot size beside it ('Building Area: 1,868 SQFT / Lot "
+                        "Size: 7,405 SQFT') and may list comparable sales with their "
+                        "own areas — never use either.\n\n"
                         f"{text}"
                     ),
                 }
@@ -132,6 +137,13 @@ _PROPERTY_SCHEMA = {
         "monthly_rent": {"type": "number"},
         "arv": {"type": "number"},
         "year_built": {"type": "integer"},
+        "sqft": {
+            "type": "integer",
+            "description": (
+                "Heated/living area of the building in square feet — never the lot "
+                "or land size, and never a comparable property's area."
+            ),
+        },
         "beds": {"type": "integer"},
         "baths": {"type": "number"},
     },

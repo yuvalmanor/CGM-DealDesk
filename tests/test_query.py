@@ -36,3 +36,43 @@ def test_retryable_label_is_not_negated():
     assert "-label:Error" not in q
     for label in ("Passed-BuyBox", "Needs-Human", "Rejected", "Not-A-Deal"):
         assert f"-label:{label}" in q
+
+
+def test_self_addresses_are_excluded_as_senders():
+    # DealDesk sends its notifications to the mailbox it watches; without this
+    # the next run ingests its own output as candidate deals.
+    q = build_work_queue_query(
+        date(2026, 6, 28), LABELS, self_addresses=("deals@cgm-ventures.com",)
+    )
+    assert "-from:deals@cgm-ventures.com" in q
+
+
+def test_multiple_self_addresses_are_all_excluded():
+    q = build_work_queue_query(
+        date(2026, 6, 28),
+        LABELS,
+        self_addresses=("deals@cgm-ventures.com", "notify@cgm-ventures.com"),
+    )
+    assert "-from:deals@cgm-ventures.com" in q
+    assert "-from:notify@cgm-ventures.com" in q
+
+
+def test_self_addresses_are_normalized_and_deduplicated():
+    q = build_work_queue_query(
+        date(2026, 6, 28),
+        LABELS,
+        self_addresses=("Deals@CGM-Ventures.com", " deals@cgm-ventures.com "),
+    )
+    assert q.count("-from:deals@cgm-ventures.com") == 1
+
+
+def test_blank_self_address_emits_no_from_term():
+    # A bare "-from:" is junk Gmail could read either way; drop it rather than guess.
+    q = build_work_queue_query(date(2026, 6, 28), LABELS, self_addresses=("", "   "))
+    assert "-from:" not in q
+
+
+def test_no_self_addresses_leaves_query_unchanged():
+    assert build_work_queue_query(date(2026, 6, 28), LABELS) == build_work_queue_query(
+        date(2026, 6, 28), LABELS, self_addresses=()
+    )

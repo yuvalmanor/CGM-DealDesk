@@ -41,7 +41,12 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     config = Config.load(args.config)
     today = date.fromisoformat(args.today) if args.today else date.today()
     cutoff = resolve_cutoff(config, today)
-    query = build_work_queue_query(cutoff, config.bucket_labels)
+    # Same exclusion as the live queue: without it DealDesk's own notifications
+    # show up in the Pareto as a top "Source", which is the one Source the
+    # Template work must never be aimed at.
+    query = build_work_queue_query(
+        cutoff, config.bucket_labels, self_addresses=config.self_addresses
+    )
 
     print(f"Inbox:  {config.inbox_address}")
     print(f"Cutoff: {cutoff:%Y-%m-%d}  (on/after; discovery is read-only)")
@@ -50,7 +55,9 @@ def _cmd_discover(args: argparse.Namespace) -> int:
 
     service = build_gmail_service(config)
     gateway = GmailGateway(service)
-    messages = gateway.fetch_work_queue(cutoff, config.bucket_labels)
+    messages = gateway.fetch_work_queue(
+        cutoff, config.bucket_labels, self_addresses=config.self_addresses
+    )
 
     tally = tally_sources(messages)
     total = sum(sc.count for sc in tally)
@@ -94,13 +101,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not args.dry_run and not args.no_sheets:
         if not config.triage_spreadsheet_id:
             raise RuntimeError("triage.spreadsheet_id is not set; the Triage Log has nowhere to write.")
-        if not config.calc_spreadsheet_id:
+        # Only a *live* feed needs a sink. With calculator.enabled = false the
+        # missing-id check would be a fatal error about a write we aren't doing.
+        if config.calc_enabled and not config.calc_spreadsheet_id:
             raise RuntimeError(
                 "calculator.spreadsheet_id is not set; qualifying deals have nowhere to feed."
             )
         sheets_service = build_sheets_service(config)  # one service covers both tabs
         sheets = SheetsGateway(sheets_service, config.triage_spreadsheet_id, config.triage_tab)
-        calculator = CalculatorGateway(sheets_service, config.calc_spreadsheet_id, config.calc_tab)
+        if config.calc_enabled:
+            calculator = CalculatorGateway(
+                sheets_service, config.calc_spreadsheet_id, config.calc_tab
+            )
 
     # --no-notify suppresses Deal Notifications + Daily Digest by withholding the
     # recipient (the orchestrator already skips both when there is no `to`).
@@ -109,6 +121,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     mode = "DRY RUN — no writes or labels" if args.dry_run else "live — writes Triage Log, feeds Calculator, applies labels"
     if not args.dry_run and args.no_sheets:
         mode = "live labels only — applies labels, NO sheet writes (Triage Log + Calculator skipped)"
+    if not config.calc_enabled:
+        mode += " · Calculator feed OFF (calculator.enabled = false)"
     if not args.dry_run and args.no_notify:
         mode += " · notifications DISABLED"
     if args.no_ai:
@@ -131,13 +145,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
         config.buybox,
         dry_run=args.dry_run,
         calculator=calculator,
+        feed_enabled=config.calc_enabled,
         assumptions=config.assumptions,
         notify_to=notify_to,
         notify_from=config.notify_from,
         notify_label=config.notify_label,
+        notify_deal_cc=config.notify_deal_cc,
         calc_link=config.calc_link,
         today=today,
         escalate_after_days=config.escalate_after_days,
+        self_addresses=config.self_addresses,
     )
     results = orchestrator.run(cutoff, config.bucket_labels, limit=args.limit)
 
@@ -161,8 +178,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
 
     deals_fed = sum(r.deals_fed for r in results)
-    fed_verb = "would feed" if (args.dry_run or args.no_sheets) else "fed"
-    print(f"Calculator: {fed_verb} {deals_fed} calc-ready deal(s) to {config.calc_tab}")
+    if not config.calc_enabled:
+        print(
+            f"Calculator: feed DISABLED (calculator.enabled = false) — 0 deals written to "
+            f"{config.calc_tab}; qualifying deals are in the Triage Log + notifications only"
+        )
+    else:
+        fed_verb = "would feed" if (args.dry_run or args.no_sheets) else "fed"
+        print(f"Calculator: {fed_verb} {deals_fed} calc-ready deal(s) to {config.calc_tab}")
+
+    # Report suppressed writes even with the feed off (they'd be 0) — a deal the
+    # operator expected in the Calculator and can't find must be accounted for
+    # somewhere, not silently dropped.
+    duplicates = sum(r.feed_duplicates for r in results)
+    if duplicates:
+        print(
+            f"Calculator: skipped {duplicates} duplicate feed(s) — same address at the "
+            "same price is already in the sheet (a re-send at a new price still feeds)"
+        )
 
     resends = sum(r.resends for r in results)
     if resends:

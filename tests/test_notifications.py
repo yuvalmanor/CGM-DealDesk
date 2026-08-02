@@ -73,6 +73,17 @@ def test_deal_notification_omits_resend_line_when_absent():
     assert "Re-send:" not in n.body
 
 
+def test_deal_notification_without_an_address_names_the_email():
+    fields = {"purchase_price": 200000, "monthly_rent": 1500}
+    n = build_deal_notification(
+        fields, _pass_eval(), source="acme.com", calc_link="link",
+        email_subject="Off market deal", email_sender="deals@acme.com",
+    )
+    assert "Off market deal|deals@acme.com" in n.subject
+    assert "Off market deal|deals@acme.com" in n.body
+    assert "address unknown" not in n.body
+
+
 # --- Daily Digest -----------------------------------------------------------
 
 def _result(bucket, properties=(), subject="", sender="x@acme.com", error=None):
@@ -119,6 +130,21 @@ def test_digest_needs_human_shows_what_is_missing():
 
     assert "9 Pine" in body
     assert "missing year_built, property_type" in body
+
+
+def test_digest_line_without_an_address_names_the_email():
+    results = [
+        _result(
+            Bucket.NEEDS_HUMAN,
+            [({"purchase_price": 250000}, _needs_human_eval(("address",)))],
+            subject="Weekly list", sender="a@acme.com",
+        ),
+    ]
+
+    body = build_digest(results).body
+
+    assert "Weekly list|a@acme.com" in body
+    assert "address unknown" not in body
 
 
 def test_empty_run_still_produces_a_digest():

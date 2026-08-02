@@ -35,13 +35,39 @@ class Config:
     triage_tab: str = "DEALS_TRIAGE"
     calc_spreadsheet_id: str = ""
     calc_tab: str = "DEALS_APP"
+    # Kill switch for the downstream Calculator feed. When false, DealDesk still
+    # triages, logs, labels, and notifies — it just never writes a Deal into
+    # DEALS_APP, and no Triage row claims a fed row id. Kept separate from
+    # `calc_spreadsheet_id` so turning the feed off doesn't require destroying the
+    # sink wiring (and turning it back on is a one-word edit).
+    calc_enabled: bool = True
     assumptions: Assumptions = field(default_factory=lambda: Assumptions(0.0, 0.0))
     ai_model: str = "claude-opus-4-8"
     ai_api_key_env: str = "ANTHROPIC_API_KEY"
     notify_to: str = ""
     notify_from: str = ""
     notify_label: str = ""
+    notify_deal_cc: str = ""
     escalate_after_days: int = 3
+
+    @property
+    def self_addresses(self) -> tuple[str, ...]:
+        """Every address DealDesk itself sends as — excluded from the work queue
+        so the pipeline never triages its own Deal Notifications and Daily Digest
+        (see ``query.build_work_queue_query``).
+
+        Both the watched inbox and ``notify.from`` are listed: they are the same
+        address in the shipped config, but ``notify.from`` is operator-settable,
+        and an operator who points it elsewhere would silently re-open the loop.
+        Derived here rather than at the call site so there is one definition of
+        "our own mail"."""
+        candidates = (self.inbox_address, self.notify_from)
+        seen: list[str] = []
+        for raw in candidates:
+            address = (raw or "").strip().lower()
+            if address and address not in seen:
+                seen.append(address)
+        return tuple(seen)
 
     @property
     def calc_link(self) -> str:
@@ -94,6 +120,8 @@ class Config:
             triage_tab=triage.get("tab", "DEALS_TRIAGE"),
             calc_spreadsheet_id=calculator.get("spreadsheet_id", ""),
             calc_tab=calculator.get("tab", "DEALS_APP"),
+            # Absent = enabled, so an older config keeps its behavior.
+            calc_enabled=bool(calculator.get("enabled", True)),
             assumptions=Assumptions(
                 hml_lev_pp=float(calculator.get("hml_lev_pp", 0.0)),
                 refi_ltv=float(calculator.get("refi_ltv", 0.0)),
@@ -105,6 +133,10 @@ class Config:
             # operator's existing filter routes them; default to the inbox.
             notify_from=notify.get("from", inbox["address"]),
             notify_label=notify.get("label", ""),
+            # An extra recipient CC'd on every per-Property Deal Notification (the
+            # Daily Digest is unaffected). Empty = no CC. Used to fan a Passed deal
+            # out to an external inbox alongside the send-to-self copy.
+            notify_deal_cc=notify.get("deal_cc", ""),
             # Age (days) past which a still-failing Error Email escalates to
             # Needs-Human — age stands in for a retry counter (Phase 5).
             escalate_after_days=int(retry.get("escalate_after_days", 3)),

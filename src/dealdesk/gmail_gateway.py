@@ -36,14 +36,18 @@ class GmailGateway:
         bucket_labels: tuple[str, ...] | list[str],
         limit: int | None = None,
         retryable_labels: tuple[str, ...] | list[str] = (),
+        self_addresses: tuple[str, ...] | list[str] = (),
     ) -> list[MessageMeta]:
         """Return header-only metadata for every unprocessed Inbox Email on/after
         the cutoff. Paginates the list; fetches metadata format only (no body,
         no attachment download). ``limit`` caps the number of Emails returned —
         pagination and metadata fetches stop early, so it genuinely bounds reads
         (and, downstream, AI cost). ``retryable_labels`` (``Error``) are left in
-        the queue so a failed Email is retried."""
-        query = build_work_queue_query(cutoff, bucket_labels, retryable_labels)
+        the queue so a failed Email is retried. ``self_addresses`` are excluded as
+        senders, so DealDesk never ingests its own notifications."""
+        query = build_work_queue_query(
+            cutoff, bucket_labels, retryable_labels, self_addresses
+        )
         messages = self._service.users().messages()
 
         ids: list[str] = []
@@ -130,18 +134,30 @@ class GmailGateway:
         ).execute()
 
     def send_message(
-        self, to: str, subject: str, body_text: str, sender: str, label: str | None = None
+        self,
+        to: str,
+        subject: str,
+        body_text: str,
+        sender: str,
+        label: str | None = None,
+        cc: str | None = None,
     ) -> None:
         """Send a plain-text email. ``sender`` is set explicitly as the From so a
         Deal Notification / Digest carries the ``deals@cgm-ventures.com`` address.
         The service account impersonates that mailbox (domain-wide delegation), so
         it is authorized to send as it. Covered by the ``gmail.modify`` scope.
 
+        ``cc`` adds a carbon-copy recipient (Gmail delivers to every address in the
+        To + Cc headers of the raw message). Used to fan a Deal Notification out to
+        an extra inbox without disturbing the send-to-self ``to``.
+
         When ``label`` is given, apply it to the sent message directly (rather
         than relying on a Gmail filter to route it) — for send-to-self, the
         delivered copy carries the label. Creates the label if it doesn't exist."""
         message = EmailMessage()
         message["To"] = to
+        if cc:
+            message["Cc"] = cc
         message["From"] = sender
         message["Subject"] = subject
         message.set_content(body_text)

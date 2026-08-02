@@ -12,7 +12,7 @@ flag is explicitly forbidden to make (US 28).
 
 import pytest
 
-from dealdesk.address import normalize_address
+from dealdesk.address import address_label, normalize_address
 
 
 def _same(a, b):
@@ -111,3 +111,34 @@ def test_normalization_is_stable():
     # house could key differently depending on which spelling arrived first.
     once = normalize_address("123 N Main St., Apt. 4, Dallas, TX")
     assert normalize_address(once) == once
+
+
+# --- the no-address label: identifies the Email, never keys ----------------
+
+def test_label_is_the_address_when_there_is_one():
+    assert address_label("9 Oak Dr", "Off market deal", "deals@acme.com") == "9 Oak Dr"
+
+
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_label_falls_back_to_subject_and_sender(blank):
+    assert address_label(blank, "Off market deal", "deals@acme.com") == (
+        "Off market deal|deals@acme.com"
+    )
+
+
+def test_label_keeps_the_separator_when_one_half_is_missing():
+    # A half-empty label still reads unambiguously as "<subject>|<sender>".
+    assert address_label(None, "", "deals@acme.com") == "|deals@acme.com"
+    assert address_label(None, "Off market deal", "") == "Off market deal|"
+
+
+def test_label_is_empty_when_there_is_nothing_to_name_it_by():
+    assert address_label(None, "", "") == ""
+
+
+def test_fallback_labels_yield_the_empty_key():
+    # The label names an Email, not a house. It keys like a blank address — empty,
+    # which ``ResendIndex`` refuses to match on — so two address-less blasts
+    # sharing a subject and sender are never called the same property.
+    assert normalize_address(address_label(None, "New Deals This Week", "deals@acme.com")) == ""
+    assert normalize_address("123 Main St|deals@acme.com") == ""

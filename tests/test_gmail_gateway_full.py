@@ -275,6 +275,35 @@ def test_send_message_encodes_from_subject_and_body():
     assert "Price: $250,000" in raw
 
 
+def test_send_message_adds_cc_header_when_given():
+    messages = _FakeMessages(_message_with_attachment(), "")
+    gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))
+
+    gateway.send_message(
+        "deals@cgm-ventures.com", "Deal: 123 Main St", "body",
+        sender="deals@cgm-ventures.com", cc="extra@example.com",
+    )
+
+    _user_id, body = messages.send_calls[0]
+    raw = base64.urlsafe_b64decode(body["raw"].encode()).decode()
+    assert "To: deals@cgm-ventures.com" in raw
+    assert "Cc: extra@example.com" in raw  # extra recipient delivered alongside To
+
+
+def test_send_message_omits_cc_header_when_not_given():
+    messages = _FakeMessages(_message_with_attachment(), "")
+    gateway = GmailGateway(_FakeService(messages, _FakeLabels([])))
+
+    gateway.send_message(
+        "deals@cgm-ventures.com", "Deal: 123 Main St", "body",
+        sender="deals@cgm-ventures.com",
+    )
+
+    _user_id, body = messages.send_calls[0]
+    raw = base64.urlsafe_b64decode(body["raw"].encode()).decode()
+    assert "Cc:" not in raw
+
+
 def test_send_message_applies_label_to_sent_message():
     messages = _FakeMessages(_message_with_attachment(), "")
     labels = _FakeLabels([{"id": "L_DN", "name": "Deal Notifications"}])

@@ -33,6 +33,14 @@ punctuation) and nothing else, because a *missed* re-send is a cheap miss while 
 re-send of itself (the lookup excludes its own message-id), so a re-run is
 idempotent.
 
+**No address? The Email names the deal.** When extraction recovers no address,
+the Triage row, the Deal Notification, the digest line and the fed Calculator row
+all carry `<email subject>|<email sender>` in place of a blank — enough to find
+the Email in Gmail and act on it. The label is display-only: the `|` marks it as
+naming an Email rather than a house, and the normalizer refuses to key on it, so
+two address-less blasts sharing a subject line are never called the same
+property. `facts_json` still records only what the Source actually said.
+
 Earlier phases are unchanged: the read half (Phase 1 — auth, work-queue query,
 read-only `discover`); the triage spine (Phase 2 — extract → evaluate → roll up →
 Triage Log → Bucket label **last**); the Calculator feed (Phase 3 — a *partial*
@@ -94,8 +102,56 @@ label, or AI call.
 
 `run` triages each unprocessed Email: extract every Property, evaluate it against
 the Buy Box, roll up to a Bucket, upsert the Triage Log, **feed every calc-ready
-Pass/Needs-Human Property into the Calculator's `DEALS_APP` tab**, and apply the
-Bucket label last. The run summary ends with how many deals were fed.
+Property that *passed* the Buy Box into the Calculator's `DEALS_APP` tab**, and
+apply the Bucket label last. The run summary ends with how many deals were fed.
+
+Only a clean **Pass** feeds (narrowed 2026-08-02 — `Needs-Human` used to feed
+too). Calc-ready and Pass answer different questions: calc-ready means the
+Calculator's feed-required inputs are present, which says nothing about whether
+any *gate* was cleared. `year_built` is a gate but is not feed-required, so a
+Property whose Email never stated a year is calc-ready and Needs-Human at the
+same time — and because a *missing* gate field evaluates to Needs-Human rather
+than Reject, it reached `DEALS_APP` never having been measured against
+`year_built >= 2000` at all. A Needs-Human Property still gets its Triage row,
+its label, and its line in the Daily Digest; it just isn't entered as a Deal
+until a human supplies the missing fact.
+
+Two guards keep the pipeline from feeding on itself (both added 2026-08-01, after
+the first live week showed each firing in production):
+
+- **The work queue excludes DealDesk's own send addresses** (`inbox.address` and
+  `notify.from`, see `Config.self_addresses`). Deal Notifications and the Daily
+  Digest are sent *to* the mailbox DealDesk watches, so without this each run
+  ingests the previous run's output as fresh deals — and because a Digest body
+  lists every address in the run, the AI rung re-extracts all of them. That loop
+  wrote **316 of the Triage Log's first 630 rows**. Excluded at the query, so a
+  self-sent Email costs no read, no token, and can never reach a sheet.
+- **The same-offer guard skips a duplicate Calculator write.** `feed_row_id` is
+  keyed on (message-id, index), which makes a *re-run* idempotent but does
+  nothing about the same house arriving in a *new* Email — one $289k deal
+  occupied nine `DEALS_APP` rows. A Property whose **address and price both
+  match** one already fed is not written again; its Triage row links to the
+  existing `DEALS_APP` row instead. A re-send at a **different price still
+  feeds** — a price drop reviving a dead deal is exactly what the re-send flag is
+  for. The Triage row is always written (rows are never merged), and the run
+  summary reports how many writes were skipped.
+
+### Current operating mode (set 2026-08-01)
+
+The pipeline runs **normally and on schedule** — twice-daily unattended triage,
+Triage Log writes, and Gmail labels all as designed — with two deliberate
+exceptions that keep every effect **inside the deals mailbox** while the pipeline
+and Buy Box guidelines are reworked:
+
+| Exception | Switch | Effect |
+|---|---|---|
+| No Calculator insertion | `[calculator] enabled = false` | No `DEALS_APP` row is written, and no Triage row carries a `deals_app_row_id` — the log never claims a link that doesn't exist. Qualifying deals are entered into the Calculator by hand. |
+| No external email | `[notify] deal_cc = ""` | Deal Notifications are no longer CC'd to an outside address. `to` and `from` are both `deals@cgm-ventures.com`, so nothing DealDesk sends leaves that mailbox. |
+
+Everything else is untouched: Emails are still extracted, evaluated, logged,
+bucket-labeled, and notified (send-to-self), so the triage record stays complete.
+Reverse either exception independently — set `enabled = true`, or put the address
+back in `deal_cc`.
 
 | Flag | Effect |
 |---|---|
@@ -117,18 +173,23 @@ for the AI fallback. `run` needs the `gmail.modify` and `spreadsheets` scopes
 the standing financing assumptions (`hml_lev_pp`, `refi_ltv`) fed into every
 Deal — keep them in sync with the Calculator's `DEFAULT_DEAL`.
 
-## Scheduling — unattended daily run
+## Scheduling — unattended twice-daily run
 
-The daily run is a **Windows Task Scheduler** task invoking one PowerShell
+The scheduled run is a **Windows Task Scheduler** task invoking one PowerShell
 script that exits when it's done — there's no resident agent, so firing costs
-nothing while idle (ADR-0001).
+nothing while idle (ADR-0001). It fires **twice a day** (default 07:00 and
+20:00) as two independent daily triggers.
 
 ```powershell
-.\scripts\install-task.ps1               # register, runs daily at 07:00
-.\scripts\install-task.ps1 -At 06:30     # pick a different time
-.\scripts\install-task.ps1 -PrintOnly    # review the task XML; register nothing
-.\scripts\install-task.ps1 -Force        # replace an existing task
+.\scripts\install-task.ps1                    # register, runs at 07:00 and 20:00
+.\scripts\install-task.ps1 -At 06:30,19:30    # pick the two times (exactly two)
+.\scripts\install-task.ps1 -PrintOnly         # review the task XML; register nothing
+.\scripts\install-task.ps1 -Force             # replace an existing task
 ```
+
+Replacing a **disabled** task additionally requires `-ReenableDisabled`: a plain
+`-Force` unregisters and re-registers, which would come back *enabled* and
+silently restart the automation you stopped.
 
 No admin rights are needed: the task runs as you, at least privilege, with an
 interactive token, so **no password is stored**.

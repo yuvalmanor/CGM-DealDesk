@@ -64,4 +64,9 @@ def test_config_loads_buybox_from_default_file():
         assert gate.op in (">=", "<=", ">", "<", "==", "in", "not_in")
         assert gate.threshold is not None
     assert cfg.buybox.feed_required_names() == ("purchase_price",)
-    assert cfg.buybox.feed_optional_names() == ("monthly_rent", "arv")
+    assert cfg.buybox.feed_optional_names() == ("monthly_rent", "arv", "sqft")
+    # sqft is a Calculator input only — never a gate, never feed-required. Either
+    # role would put it in the must-haves and force an AI call on every Email
+    # that omits it, which is the mistake the dropped property_type gate made.
+    assert "sqft" not in cfg.buybox.must_have_names()
+    assert cfg.buybox.must_have_names() == ("purchase_price", "year_built")

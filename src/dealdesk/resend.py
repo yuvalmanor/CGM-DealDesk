@@ -40,6 +40,10 @@ class PriorProperty:
     verdict: str
     price: float | None = None
     received_date: str = ""
+    # The DEALS_APP row this Property was fed to, or "" when it was never fed.
+    # Carried so the feed can recognize an offer the Calculator already holds
+    # (see ``deal_input.already_fed``) — the breadcrumb itself never uses it.
+    deals_app_row_id: str = ""
 
     @property
     def key(self) -> tuple[str, int]:
